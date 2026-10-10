@@ -121,7 +121,7 @@ func cmdRestore(args []string) error {
 	fs := flag.NewFlagSet("restore", flag.ExitOnError)
 	dir := fs.String("dir", ".", "working directory to restore into")
 	size := fs.Int("budget", budget(), "maximum size of the rendered history in bytes")
-	out := fs.String("o", "", "write the rendered history to this file instead of stdout")
+	out := fs.String("o", "", "also write the rendered history to this file")
 	fs.Parse(args)
 	if fs.NArg() != 1 {
 		usage()
@@ -134,16 +134,26 @@ func cmdRestore(args []string) error {
 	if err != nil {
 		return err
 	}
-	res, err := sesh.Restore(context.Background(), sesh.RestoreOptions{Store: st, Token: tok, Dir: *dir, Budget: *size})
+	home, _ := os.UserHomeDir()
+	// From a shell there is no live session to load history into, so the
+	// history becomes a native session that claude --resume continues.
+	res, err := sesh.Restore(context.Background(), sesh.RestoreOptions{
+		Store: st, Token: tok, Dir: *dir, Budget: *size, Native: true, Home: home,
+	})
 	if err != nil {
 		return err
 	}
 	fmt.Fprintln(os.Stderr, restoreSummary(res))
 	if *out != "" {
-		return os.WriteFile(*out, []byte(res.Rendered), 0o600)
+		if err := os.WriteFile(*out, []byte(res.Rendered), 0o600); err != nil {
+			return err
+		}
 	}
-	_, err = io.WriteString(os.Stdout, res.Rendered)
-	return err
+	if res.NativeSession == "" {
+		return fmt.Errorf("could not write a native session: %s", res.NativeErr)
+	}
+	fmt.Printf("claude --resume %s\n", res.NativeSession)
+	return nil
 }
 
 // hookInput is the subset of a UserPromptSubmit event sesh uses.
@@ -224,7 +234,14 @@ func hookRestore(ev hookInput, arg string) hookOutput {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
 	defer cancel()
-	res, err := sesh.Restore(ctx, sesh.RestoreOptions{Store: st, Token: tok, Dir: ev.Cwd, Budget: budget()})
+	// A hosted session's transcript lives on the provider's server, so a
+	// native session file written there would never be read. A local CLI
+	// can resume one, so write it there too.
+	home, _ := os.UserHomeDir()
+	res, err := sesh.Restore(ctx, sesh.RestoreOptions{
+		Store: st, Token: tok, Dir: ev.Cwd, Budget: budget(),
+		Native: os.Getenv("CLAUDE_CODE_REMOTE") != "true", Home: home,
+	})
 	if err != nil {
 		return block("sesh restore failed: " + err.Error())
 	}
@@ -255,7 +272,11 @@ func restoreSummary(r *sesh.RestoreResult) string {
 	} else {
 		s += "; working copy not restored: " + r.Worktree
 	}
-	return s + "."
+	s += "."
+	if r.NativeSession != "" {
+		s += "\nFor the real turns, start a new session here with: claude --resume " + r.NativeSession
+	}
+	return s
 }
 
 func shortID(id string) string {

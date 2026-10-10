@@ -19,6 +19,7 @@ All checks ran on 2026-10-10 in Claude Code cloud sessions (CLI 2.1.296).
 | `decision: "block"` does not reach the model's context | A blocked prompt's text was not recalled later |
 | The app does not display `stopReason` | The restore turn showed nothing in the Claude app |
 | The local CLI resumes a transcript it didn't write | A hand-written session file plus `claude --resume` recalled its codeword |
+| A restored native session keeps real turns, tool results and thinking | After `sesh restore` from a shell, `claude --resume` recalled a fact seen only in a tool result, and a session with signed thinking blocks resumed cleanly (same account) |
 
 ## Commands
 
@@ -67,15 +68,25 @@ Restore: fetch and check out base on a new branch, apply every patch, remove eve
 
 ## Restoring the conversation
 
-The transcript is rendered as text and returned as `stopReason` with `continue: false`. The model sees it on every later turn. The app does not show it, so the hook also prints a short visible confirmation.
+Real turns can only reach a session started from a session file: a running CLI never re-reads its transcript, and a hosted session's transcript lives on the provider's server. So restore picks the form from where it runs, with no option to choose:
+
+| Where `sesh restore` runs | Result |
+| --- | --- |
+| A shell | A native session file for the target directory; prints `claude --resume <id>` |
+| The hook, in a local CLI session | The rendered history as `stopReason`, so this session continues now, plus a native session file for real turns |
+| The hook, in a hosted session (`CLAUDE_CODE_REMOTE=true`) | The rendered history as `stopReason` only |
+
+The native file is the saved transcript with every record's `sessionId` and `cwd` rewritten; content, uuids and the `parentUuid` chain are unchanged. It goes in `~/.claude/projects/<cwd>/`, where `<cwd>` has every character other than an ASCII letter or digit replaced by `-`.
+
+### Rendered history
+
+In the hook, the transcript is rendered as text and returned as `stopReason` with `continue: false`. The model sees it on every later turn. The app does not show it, so the hook also prints a short visible confirmation.
 
 Rendering rules:
 - Frame it as a quoted record of past turns, not instructions, so it isn't read as a prompt injection.
 - Keep user and assistant text whole. Truncate long tool inputs and results, keeping their start and end.
 - Drop thinking blocks and harness records (attachments, hook progress, cost and title records).
 - Fit a character budget: recent turns verbatim, older tool output trimmed first.
-
-When the target is a local CLI instead, `sesh restore --native` writes the transcript as a native session file for `claude --resume`.
 
 ## Storage
 
@@ -89,8 +100,14 @@ A local directory store exists for tests and offline use.
 - Automatic per-turn saves. Save is manual.
 - Codex. Its hooks and rollout format are unverified.
 
+## Related work
+
+- **[ctxmv](https://github.com/Ryu0118/ctxmv)** (v0.7.0) moves sessions between local agents (Claude Code, Codex, Cursor, Kimi, Copilot CLI) by writing the target's native session file. It works on one machine only, carries no working copy, and keeps only user and assistant text: tool calls, tool results, thinking and images are dropped. On one real session that kept 96,000 characters and dropped 147 tool calls and 146 results (about 338,000 characters). Its code documents Claude Code's resume requirements, and its parsing library [AgentSessions](https://github.com/Ryu0118/AgentSessions) reads the other agents' formats.
+- **[Unified Agent Session Specification](https://github.github.com/gh-aw/specs/unified-agent-session-specification/)** (GitHub Agentic Workflows, draft v1.7.0) defines neutral session events with native passthrough, for logging and analysis across Claude, Codex, Copilot, Gemini and others. It has no working copy and no resume semantics. It is the likely neutral format if sesh adds other agents; Claude-to-Claude restore keeps the native transcript.
+
 ## Open questions
 
 - Which hook output channel the Claude app displays: block `reason`, `systemMessage`, or neither.
 - Whether a prompt can be submitted at all once an account's quota is exhausted.
 - How large a rendered history can be before the target model's context suffers.
+- Whether signed thinking blocks in a native session resume under a different account.

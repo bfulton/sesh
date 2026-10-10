@@ -86,10 +86,41 @@ func TestTrim(t *testing.T) {
 }
 
 func TestProjectDir(t *testing.T) {
-	got := ProjectDir("/root", "/tmp/claude-0/-home-user-sesh/a.b")
-	want := filepath.Join("/root", ".claude", "projects", "-tmp-claude-0--home-user-sesh-a-b")
+	got := ProjectDir("/root", "/tmp/claude-0/-home-user-sesh/a.b_c d")
+	want := filepath.Join("/root", ".claude", "projects", "-tmp-claude-0--home-user-sesh-a-b-c-d")
 	if got != want {
 		t.Errorf("ProjectDir = %q, want %q", got, want)
+	}
+}
+
+func TestWriteNative(t *testing.T) {
+	home := t.TempDir()
+	in := `{"type":"user","sessionId":"old","cwd":"/src","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"hi"}}
+{"type":"assistant","sessionId":"old","cwd":"/src","uuid":"a1","parentUuid":"u1","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
+{"type":"last-prompt","sessionId":"old","lastPrompt":"hi","leafUuid":"a1"}
+`
+	path, err := WriteNative([]byte(in), home, "/dst/repo", "new-id")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(ProjectDir(home, "/dst/repo"), "new-id.jsonl"); path != want {
+		t.Errorf("path = %q, want %q", path, want)
+	}
+	data, _ := os.ReadFile(path)
+	out := string(data)
+	if strings.Contains(out, `"old"`) || strings.Contains(out, `"/src"`) {
+		t.Errorf("old session id or cwd survived:\n%s", out)
+	}
+	if strings.Count(out, `"sessionId":"new-id"`) != 3 || strings.Count(out, `"cwd":"/dst/repo"`) != 2 {
+		t.Errorf("rewrite incomplete:\n%s", out)
+	}
+	for _, keep := range []string{`"parentUuid":"u1"`, `"leafUuid":"a1"`, `"text":"hello"`} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("lost %s:\n%s", keep, out)
+		}
+	}
+	if _, err := WriteNative([]byte(in), home, "/dst/repo", "new-id"); err == nil {
+		t.Error("overwrote an existing session file")
 	}
 }
 

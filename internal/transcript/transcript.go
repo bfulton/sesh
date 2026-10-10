@@ -13,10 +13,73 @@ import (
 )
 
 // ProjectDir returns the directory where Claude Code keeps transcripts for
-// sessions started in cwd: ~/.claude/projects/<cwd with / and . replaced by ->.
+// sessions started in cwd: ~/.claude/projects/<cwd with every character
+// other than an ASCII letter or digit replaced by ->.
 func ProjectDir(home, cwd string) string {
-	enc := strings.NewReplacer("/", "-", ".", "-").Replace(cwd)
-	return filepath.Join(home, ".claude", "projects", enc)
+	enc := []byte(cwd)
+	for i, c := range enc {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9') {
+			enc[i] = '-'
+		}
+	}
+	return filepath.Join(home, ".claude", "projects", string(enc))
+}
+
+// WriteNative writes a transcript as a new Claude Code session for cwd, so
+// `claude --resume <sessionID>` there continues it with its real turns. Every
+// record keeps its content; only its session id and working directory change.
+// It returns the path written.
+func WriteNative(data []byte, home, cwd, sessionID string) (string, error) {
+	sid, err := json.Marshal(sessionID)
+	if err != nil {
+		return "", err
+	}
+	dir, err := json.Marshal(cwd)
+	if err != nil {
+		return "", err
+	}
+	var out bytes.Buffer
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 {
+			continue
+		}
+		var r map[string]json.RawMessage
+		if err := json.Unmarshal(line, &r); err != nil {
+			return "", fmt.Errorf("transcript: %w", err)
+		}
+		if _, ok := r["sessionId"]; ok {
+			r["sessionId"] = sid
+		}
+		if _, ok := r["cwd"]; ok {
+			r["cwd"] = dir
+		}
+		b, err := json.Marshal(r)
+		if err != nil {
+			return "", err
+		}
+		out.Write(b)
+		out.WriteByte('\n')
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	pdir := ProjectDir(home, cwd)
+	if err := os.MkdirAll(pdir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(pdir, sessionID+".jsonl")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(out.Bytes()); err != nil {
+		f.Close()
+		return "", err
+	}
+	return path, f.Close()
 }
 
 // Find returns the transcript path for a session id under home, searching

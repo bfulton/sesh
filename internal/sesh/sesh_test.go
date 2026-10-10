@@ -96,6 +96,25 @@ func TestSaveRestoreEndToEnd(t *testing.T) {
 		t.Errorf("on branch %s, want %s", got, res.Branch)
 	}
 
+	// Native restore also writes a resumable session for the target directory.
+	home := filepath.Join(tmp, "home")
+	dst2 := filepath.Join(tmp, "dst2")
+	run(t, tmp, "git", "clone", "-q", remote, dst2)
+	nres, err := Restore(ctx, RestoreOptions{Store: st, Token: tok, Dir: dst2, Native: true, Home: home})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if nres.NativeErr != "" || nres.NativeSession == "" {
+		t.Fatalf("native session not written: %q", nres.NativeErr)
+	}
+	native, err := os.ReadFile(nres.NativePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(native), "garnet4242") || !strings.HasPrefix(nres.NativePath, home) {
+		t.Errorf("native session at %s is wrong:\n%s", nres.NativePath, native)
+	}
+
 	// A wrong token finds nothing.
 	other, _ := token.New()
 	if _, err := Restore(ctx, RestoreOptions{Store: st, Token: other, Dir: dst}); !errors.Is(err, store.ErrNotFound) {

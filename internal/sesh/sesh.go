@@ -4,6 +4,7 @@ package sesh
 
 import (
 	"context"
+	"crypto/rand"
 	"errors"
 	"fmt"
 	"os"
@@ -125,6 +126,12 @@ type RestoreOptions struct {
 	Dir    string // target working directory
 	Budget int    // maximum rendered history size in bytes
 	Now    time.Time
+
+	// Native also writes the history as a new Claude Code session under
+	// Home, so `claude --resume` continues it with real turns. It suits a
+	// local CLI; in a hosted session the file would never be read.
+	Native bool
+	Home   string
 }
 
 // RestoreResult describes a completed restore.
@@ -135,6 +142,10 @@ type RestoreResult struct {
 	Branch   string // branch the working copy was restored onto, if any
 	Worktree string // why the working copy was not restored, if it wasn't
 	Archive  *archive.Archive
+
+	NativeSession string // id of the native session written, if any
+	NativePath    string // its transcript file
+	NativeErr     string // why it couldn't be written, if Native was asked for
 }
 
 // Restore downloads a saved session, restores its working copy into Dir and
@@ -175,6 +186,18 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 	}
 	res.Rendered = transcript.Render(entries, m.SavedAt.Format(time.RFC3339), source, o.Budget)
 
+	if o.Native {
+		id, err := newSessionID()
+		if err == nil {
+			res.NativePath, err = transcript.WriteNative(a.Transcript, o.Home, absDir(o.Dir), id)
+		}
+		if err != nil {
+			res.NativeErr = err.Error()
+		} else {
+			res.NativeSession = id
+		}
+	}
+
 	switch {
 	case m.Base == "":
 		res.Worktree = "the save has no working copy"
@@ -186,4 +209,22 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// newSessionID returns a random UUID in Claude Code's session id form.
+func newSessionID() (string, error) {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return "", err
+	}
+	b[6] = b[6]&0x0f | 0x40
+	b[8] = b[8]&0x3f | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]), nil
+}
+
+func absDir(dir string) string {
+	if a, err := filepath.Abs(dir); err == nil {
+		return a
+	}
+	return dir
 }
