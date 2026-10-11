@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: gofmt
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then echo "not gofmt'd:"; echo "$unformatted"; exit 1; fi
+      - name: vet
+        run: go vet ./...
+      - name: test
+        run: go test -race -count=1 ./...
+
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: build for every target OS
+        run: |
+          for os in linux darwin windows; do GOOS=$os go build ./...; done
+      - name: shellcheck plugin launcher
+        run: shellcheck plugin/scripts/sesh
+      - name: plugin JSON is valid
+        run: |
+          for f in plugin/hooks/hooks.json plugin/.claude-plugin/plugin.json plugin/.mcp.json .claude-plugin/marketplace.json; do
+            jq empty "$f" || { echo "invalid JSON: $f"; exit 1; }
+          done
