@@ -62,11 +62,15 @@ An **archive** is a 12-byte random nonce followed by the AES-256-GCM ciphertext 
 
 ```
 manifest.json                   format version, source, session id, repo, branch, base commit,
-                                save time, changed and deleted paths, memory files
+                                save time, changed and deleted paths, memory files,
+                                the session folder's original path and files
 transcript.jsonl                the native transcript, verbatim
 worktree/patches/<path>.patch   one binary diff per changed path, against base
 memory/<path>                   the session's Claude Code project memory folder, if any
+session/<path>                  the session folder's tool-results/ and subagents/
 ```
+
+Claude Code keeps a folder beside each transcript, `<session id>/`. When a tool's output is too large for the context, it is written to `tool-results/` and the transcript says where, by absolute path; subagent transcripts are in `subagents/`. Saves carry those two parts, smallest files first, up to 64 MB. The rest of the folder, such as a cloud session's `ccr-tip.json` event pointer, belongs to the live original and stays behind.
 
 Stores: a directory (`file:///path`), an S3-compatible bucket (`s3://bucket/prefix`, configured through the AWS SDK's environment), or a sesh server (`https://host`).
 
@@ -97,7 +101,9 @@ Real turns reach only a session started from a session file: a running CLI never
 
 `restore` takes a share token, or with a vault, a session id prefix or title words.
 
-The **native file** is the transcript with each record's `sessionId` and `cwd` rewritten; content, uuids and the `parentUuid` chain are unchanged. It goes in `~/.claude/projects/<cwd>/`, where `<cwd>` has every character other than an ASCII letter or digit replaced by `-`. The memory folder is copied alongside, never overwriting existing files.
+The **native file** is the transcript with each record's `sessionId` and `cwd` rewritten; content, uuids and the `parentUuid` chain are unchanged. It goes in `~/.claude/projects/<cwd>/`, where `<cwd>` has every character other than an ASCII letter or digit replaced by `-`. The memory folder is copied alongside, never overwriting existing files. The session folder's files go in the copy's own folder, subagent transcripts rewritten the same way, and references to the original folder are pointed at the copy's, so a resumed agent can reread a large tool output.
+
+A copy is a fork, so it leaves out what binds the original to live state. Claude Code applies these metadata records to whatever session id they carry, and its own fork clears the same state: `bridge-session` (the Remote Control bridge; a copy that kept it took over the original's bridge, which then dropped off with close 4090, issue #2), `worktree-state`, `relocated`, `dev-mods`, `artifact-comment-monitor` and `artifact-autoreact-ledger`, plus `bridge_status` system messages, which link to the original's bridge. A message left out is unlinked from the chain: its children take its parent. Tested with Claude Code 2.1.296: before the fix, a resumed copy wrote the original's bridge id back out under its own id and tried to enter the original's worktree; after it, neither appears.
 
 `claude --resume` loads a session by following `parentUuid` back from its latest message. A compaction writes a `compact_boundary` record with no parent, so a compacted session resumes from its last compaction: the summary, the prompt of the turn the compaction interrupted (the summary names it in `summarizedTurnPromptUuids`), and what came after. Earlier turns stay in the file, unread; this is how Claude Code treats any compacted session, not something the copy changes. Tested here: a copy of this session, compacted mid-turn at 785k tokens, resumed in a terminal showing 1 of its 60 prompts. Relinking the boundary would load the full history and force another compaction, so restore leaves it alone and says how many prompts the resume brings back; `sesh show` prints the whole conversation. Compaction summaries are left out of the rendered history and the search index, since the turns they summarize are there in full.
 

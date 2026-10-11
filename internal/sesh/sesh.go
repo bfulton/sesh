@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type SaveResult struct {
 	Turns    int    // user and assistant messages in the transcript
 	Worktree string // why the working copy was not captured, if it wasn't
 	Pushed   bool   // whether the base commit is on a remote
+	Skipped  int    // session files left out to keep the save under maxSessionFiles
 	Entry    *vault.Entry
 }
 
@@ -84,6 +86,15 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 	res := &SaveResult{Token: tok, Turns: meta.Messages}
 	if a.Memory, err = readMemory(filepath.Join(filepath.Dir(o.TranscriptPath), "memory")); err != nil {
 		return nil, fmt.Errorf("reading memory folder: %w", err)
+	}
+	side := strings.TrimSuffix(o.TranscriptPath, ".jsonl")
+	if a.Files, res.Skipped, err = readSessionFiles(side); err != nil {
+		return nil, fmt.Errorf("reading session folder: %w", err)
+	}
+	if len(a.Files) > 0 {
+		if a.Manifest.SessionDir, err = filepath.Abs(side); err != nil {
+			return nil, err
+		}
 	}
 	if o.SkipWorktree {
 		res.Worktree = "not captured for this save"
@@ -217,7 +228,10 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 	if o.Native {
 		id, err := newSessionID()
 		if err == nil {
-			res.NativePath, err = transcript.WriteNative(a.Transcript, o.Home, absDir(o.Dir), id)
+			res.NativePath, err = transcript.WriteNative(a.Transcript, transcript.Native{
+				Home: o.Home, Cwd: absDir(o.Dir), SessionID: id,
+				SideDir: m.SessionDir, Files: a.Files,
+			})
 		}
 		if err == nil {
 			err = writeMemory(filepath.Join(filepath.Dir(res.NativePath), "memory"), a.Memory)
@@ -319,6 +333,67 @@ func readMemory(dir string) (map[string][]byte, error) {
 		return nil
 	})
 	return files, err
+}
+
+// maxSessionFiles caps the session files kept in one save.
+const maxSessionFiles = 64 << 20
+
+// readSessionFiles reads the parts of a session's folder that belong to its
+// history (transcript.SideDirs), smallest first, leaving out files past
+// maxSessionFiles. It returns how many were left out.
+func readSessionFiles(dir string) (map[string][]byte, int, error) {
+	type file struct {
+		rel  string
+		size int64
+	}
+	var found []file
+	for _, sub := range transcript.SideDirs {
+		root := filepath.Join(dir, sub)
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) && p == root {
+					return filepath.SkipDir
+				}
+				return err
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(dir, p)
+			if err != nil {
+				return err
+			}
+			found = append(found, file{filepath.ToSlash(rel), info.Size()})
+			return nil
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].size < found[j].size })
+	files := map[string][]byte{}
+	var total int64
+	skipped := 0
+	for _, f := range found {
+		if total+f.size > maxSessionFiles {
+			skipped++
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(f.rel)))
+		if errors.Is(err, os.ErrNotExist) {
+			continue // removed since the walk
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		total += int64(len(data))
+		files[f.rel] = data
+	}
+	return files, skipped, nil
 }
 
 // writeMemory adds memory files to a project memory folder. Files already

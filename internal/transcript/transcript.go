@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"time"
@@ -26,18 +27,170 @@ func ProjectDir(home, cwd string) string {
 	return filepath.Join(home, ".claude", "projects", string(enc))
 }
 
+// boundTypes are metadata records that bind a session to something live:
+// its Remote Control bridge, its worktree, the folder it moved to, its
+// dev-mods folder, the artifacts whose comments it watches. Claude Code
+// applies them to whatever session id they carry, so a copy that kept them
+// would take over the original's bindings; Claude Code's own fork drops the
+// same state.
+var boundTypes = map[string]bool{
+	"bridge-session":            true,
+	"worktree-state":            true,
+	"relocated":                 true,
+	"dev-mods":                  true,
+	"artifact-comment-monitor":  true,
+	"artifact-autoreact-ledger": true,
+}
+
+// boundSubtypes are system messages that only point at a live binding, such
+// as the original's Remote Control link.
+var boundSubtypes = map[string]bool{
+	"bridge_status": true,
+}
+
+// Native is a copy of a session to write as a new Claude Code session.
+type Native struct {
+	Home      string // home directory holding .claude/projects
+	Cwd       string // working directory the copy belongs to
+	SessionID string // the copy's session id
+
+	// SideDir is the folder beside the original transcript where Claude Code
+	// kept its large tool outputs and subagent transcripts; Files holds them
+	// by path within it. They are written beside the copy, references to
+	// SideDir are pointed at the copy's folder, and subagent transcripts are
+	// rewritten like the main one.
+	SideDir string
+	Files   map[string][]byte
+}
+
 // WriteNative writes a transcript as a new Claude Code session for cwd, so
 // `claude --resume <sessionID>` there continues it with its real turns. Every
-// record keeps its content; only its session id and working directory change.
-// It returns the path written.
-func WriteNative(data []byte, home, cwd, sessionID string) (string, error) {
-	sid, err := json.Marshal(sessionID)
+// message keeps its content; only its session id, working directory and
+// references to the session's own folder change. Records binding the
+// original to live state (boundTypes) are left out, so the copy gets its own
+// Remote Control bridge, worktree and the rest; a message left out is
+// unlinked from the chain, its children taking its parent. It returns the
+// path of the transcript written.
+func WriteNative(data []byte, n Native) (string, error) {
+	pdir := ProjectDir(n.Home, n.Cwd)
+	side := filepath.Join(pdir, n.SessionID)
+	repoint, err := repointer(n.SideDir, side)
 	if err != nil {
 		return "", err
 	}
-	dir, err := json.Marshal(cwd)
+	main, err := n.rewrite(data, repoint)
 	if err != nil {
 		return "", err
+	}
+	files := map[string][]byte{}
+	for p, b := range n.Files {
+		if !validSideFile(p) {
+			return "", fmt.Errorf("session file %q: unexpected path", p)
+		}
+		switch {
+		case strings.HasPrefix(p, "subagents/") && strings.HasSuffix(p, ".jsonl"):
+			if b, err = n.rewrite(b, repoint); err != nil {
+				return "", fmt.Errorf("session file %s: %w", p, err)
+			}
+		case strings.HasPrefix(p, "subagents/"):
+			b = repoint(b)
+		}
+		files[p] = b
+	}
+	if err := os.MkdirAll(pdir, 0o700); err != nil {
+		return "", err
+	}
+	tpath := filepath.Join(pdir, n.SessionID+".jsonl")
+	f, err := os.OpenFile(tpath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return "", err
+	}
+	fail := func(err error) (string, error) {
+		f.Close()
+		os.Remove(tpath)
+		return "", err
+	}
+	// Side files first: once the transcript exists, the session can be
+	// resumed, and it should find everything it refers to.
+	for p, b := range files {
+		dst := filepath.Join(side, filepath.FromSlash(p))
+		if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+			return fail(err)
+		}
+		if err := os.WriteFile(dst, b, 0o600); err != nil {
+			return fail(err)
+		}
+	}
+	if _, err := f.Write(main); err != nil {
+		return fail(err)
+	}
+	return tpath, f.Close()
+}
+
+// SideDirs are the parts of a session's folder that belong to its history:
+// large tool outputs and subagent transcripts. Others, such as a cloud
+// session's event pointer, bind the original to live state.
+var SideDirs = []string{"tool-results", "subagents"}
+
+func validSideFile(p string) bool {
+	if path.Clean(p) != p || path.IsAbs(p) || strings.Contains(p, "\\") {
+		return false
+	}
+	for _, d := range SideDirs {
+		if strings.HasPrefix(p, d+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// repointer returns a function replacing references to the folder from
+// with to, as they appear inside JSON strings. Without from it changes
+// nothing.
+func repointer(from, to string) (func([]byte) []byte, error) {
+	if from == "" {
+		return func(b []byte) []byte { return b }, nil
+	}
+	enc := func(s string) ([]byte, error) {
+		b, err := json.Marshal(s + "/")
+		if err != nil {
+			return nil, err
+		}
+		return b[1 : len(b)-1], nil
+	}
+	old, err := enc(from)
+	if err != nil {
+		return nil, err
+	}
+	nw, err := enc(to)
+	if err != nil {
+		return nil, err
+	}
+	return func(b []byte) []byte { return bytes.ReplaceAll(b, old, nw) }, nil
+}
+
+// rewrite gives every record of a transcript the copy's session id and
+// working directory and repoints references to the session's folder,
+// leaving out records bound to the original.
+func (n Native) rewrite(data []byte, repoint func([]byte) []byte) ([]byte, error) {
+	sid, err := json.Marshal(n.SessionID)
+	if err != nil {
+		return nil, err
+	}
+	dir, err := json.Marshal(n.Cwd)
+	if err != nil {
+		return nil, err
+	}
+	// The parent of each message left out, already relinked itself, so one
+	// lookup takes a child past any run of left-out ancestors.
+	dropped := map[string]json.RawMessage{}
+	relink := func(r map[string]json.RawMessage, key string) {
+		var id string
+		if json.Unmarshal(r[key], &id) == nil {
+			if up, ok := dropped[id]; ok {
+				r[key] = up
+			}
+		}
 	}
 	var out bytes.Buffer
 	sc := bufio.NewScanner(bytes.NewReader(data))
@@ -48,8 +201,22 @@ func WriteNative(data []byte, home, cwd, sessionID string) (string, error) {
 			continue
 		}
 		var r map[string]json.RawMessage
-		if err := json.Unmarshal(line, &r); err != nil {
-			return "", fmt.Errorf("transcript: %w", err)
+		if err := json.Unmarshal(repoint(line), &r); err != nil {
+			return nil, fmt.Errorf("transcript: %w", err)
+		}
+		var kind struct{ Type, Subtype, UUID string }
+		json.Unmarshal(line, &kind)
+		relink(r, "parentUuid")
+		relink(r, "logicalParentUuid")
+		if boundTypes[kind.Type] || kind.Type == "system" && boundSubtypes[kind.Subtype] {
+			if kind.UUID != "" {
+				p := r["parentUuid"]
+				if p == nil {
+					p = json.RawMessage("null")
+				}
+				dropped[kind.UUID] = p
+			}
+			continue
 		}
 		if _, ok := r["sessionId"]; ok {
 			r["sessionId"] = sid
@@ -59,28 +226,12 @@ func WriteNative(data []byte, home, cwd, sessionID string) (string, error) {
 		}
 		b, err := json.Marshal(r)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		out.Write(b)
 		out.WriteByte('\n')
 	}
-	if err := sc.Err(); err != nil {
-		return "", err
-	}
-	pdir := ProjectDir(home, cwd)
-	if err := os.MkdirAll(pdir, 0o700); err != nil {
-		return "", err
-	}
-	path := filepath.Join(pdir, sessionID+".jsonl")
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
-	if err != nil {
-		return "", err
-	}
-	if _, err := f.Write(out.Bytes()); err != nil {
-		f.Close()
-		return "", err
-	}
-	return path, f.Close()
+	return out.Bytes(), sc.Err()
 }
 
 // Resumable says how much of a transcript `claude --resume` brings back.

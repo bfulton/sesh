@@ -100,7 +100,7 @@ func TestWriteNative(t *testing.T) {
 {"type":"assistant","sessionId":"old","cwd":"/src","uuid":"a1","parentUuid":"u1","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
 {"type":"last-prompt","sessionId":"old","lastPrompt":"hi","leafUuid":"a1"}
 `
-	path, err := WriteNative([]byte(in), home, "/dst/repo", "new-id")
+	path, err := WriteNative([]byte(in), Native{Home: home, Cwd: "/dst/repo", SessionID: "new-id"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestWriteNative(t *testing.T) {
 			t.Errorf("lost %s:\n%s", keep, out)
 		}
 	}
-	if _, err := WriteNative([]byte(in), home, "/dst/repo", "new-id"); err == nil {
+	if _, err := WriteNative([]byte(in), Native{Home: home, Cwd: "/dst/repo", SessionID: "new-id"}); err == nil {
 		t.Error("overwrote an existing session file")
 	}
 }
@@ -207,5 +207,57 @@ func TestReadResumable(t *testing.T) {
 	}
 	if got := ReadResumable([]byte(in[:strings.Index(in, `{"type":"system"`)])); got != (Resumable{Prompts: 2, Loaded: 2}) {
 		t.Errorf("uncompacted: %+v", got)
+	}
+}
+
+// Issue #2: a copy must not carry the original's live bindings, and leaving
+// out a message must not break the chain claude --resume follows.
+func TestWriteNativeDropsBindings(t *testing.T) {
+	home := t.TempDir()
+	in := `{"type":"user","sessionId":"old","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"hi"}}
+{"type":"system","subtype":"bridge_status","sessionId":"old","uuid":"b1","parentUuid":"u1","url":"https://claude.ai/code/session_X"}
+{"type":"system","subtype":"bridge_status","sessionId":"old","uuid":"b2","parentUuid":"b1","url":"https://claude.ai/code/session_X"}
+{"type":"assistant","sessionId":"old","uuid":"a1","parentUuid":"b2","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
+{"type":"system","subtype":"compact_boundary","sessionId":"old","uuid":"c1","parentUuid":null,"logicalParentUuid":"b2"}
+{"type":"bridge-session","sessionId":"old","bridgeSessionId":"cse_X","lastSequenceNum":14500}
+{"type":"worktree-state","sessionId":"old","worktreeSession":{"worktreePath":"/orig/wt"}}
+{"type":"relocated","sessionId":"old","relocatedCwd":"/orig"}
+{"type":"dev-mods","sessionId":"old"}
+{"type":"artifact-comment-monitor","sessionId":"old"}
+{"type":"artifact-autoreact-ledger","sessionId":"old"}
+{"type":"custom-title","sessionId":"old","customTitle":"kept"}
+`
+	path, err := WriteNative([]byte(in), Native{Home: home, Cwd: "/dst", SessionID: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	out := string(data)
+	for _, gone := range []string{"cse_X", "session_X", "bridge-session", "worktree-state", "relocated", "dev-mods", "artifact-", `"b1"`, `"b2"`} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%s survived:\n%s", gone, out)
+		}
+	}
+	for _, keep := range []string{`"parentUuid":"u1"`, `"logicalParentUuid":"u1"`, `"customTitle":"kept"`, `"text":"hello"`} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("missing %s:\n%s", keep, out)
+		}
+	}
+	if n := strings.Count(out, "\n"); n != 4 {
+		t.Errorf("wrote %d records, want 4:\n%s", n, out)
+	}
+}
+
+func TestWriteNativeRefusesUnsafeFiles(t *testing.T) {
+	for _, p := range []string{"../escape", "tool-results/../../escape", "/etc/x", "tool-results", "tool-results/", "other/x", `tool-results\..\x`} {
+		home := t.TempDir()
+		_, err := WriteNative([]byte(`{"type":"user"}`+"\n"), Native{Home: home, Cwd: "/dst", SessionID: "new", Files: map[string][]byte{p: []byte("x")}})
+		if err == nil {
+			t.Errorf("accepted session file %q", p)
+		}
+	}
+	home := t.TempDir()
+	if _, err := WriteNative([]byte(`{"type":"user"}`+"\n"), Native{Home: home, Cwd: "/dst", SessionID: "new", Files: map[string][]byte{"tool-results/a/b.txt": []byte("x")}}); err != nil {
+		t.Errorf("refused a nested tool output: %v", err)
 	}
 }

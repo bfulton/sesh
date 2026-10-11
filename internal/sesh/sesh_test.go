@@ -251,3 +251,50 @@ func TestSameSessionIDInTwoFolders(t *testing.T) {
 		}
 	}
 }
+
+// A session's large tool outputs and subagent transcripts travel with it,
+// and the copy's transcript points at its own copies of them. Files outside
+// the history (a cloud session's event pointer) stay behind.
+func TestSessionFilesTravel(t *testing.T) {
+	tmp := t.TempDir()
+	src := filepath.Join(tmp, "src", ".claude", "projects", "-src")
+	side := filepath.Join(src, "s1")
+	out := filepath.Join(side, "tool-results", "toolu_1.txt")
+	os.MkdirAll(filepath.Dir(out), 0o700)
+	os.WriteFile(out, []byte("the large output"), 0o600)
+	os.MkdirAll(filepath.Join(side, "subagents"), 0o700)
+	os.WriteFile(filepath.Join(side, "subagents", "agent-a1.jsonl"),
+		[]byte(`{"type":"user","sessionId":"s1","cwd":"/src","isSidechain":true,"message":{"role":"user","content":"look"}}`+"\n"), 0o600)
+	os.WriteFile(filepath.Join(side, "ccr-tip.json"), []byte(`{"eventId":"x"}`), 0o600)
+	tpath := filepath.Join(src, "s1.jsonl")
+	os.WriteFile(tpath, []byte(`{"type":"user","sessionId":"s1","cwd":"/src","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"go"}}
+{"type":"user","sessionId":"s1","cwd":"/src","uuid":"u2","parentUuid":"u1","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"t","content":"Output has been saved to `+out+`"}]}}
+`), 0o600)
+
+	st := &store.Dir{Root: filepath.Join(tmp, "store")}
+	ctx := context.Background()
+	saved, err := Save(ctx, SaveOptions{Store: st, SessionID: "s1", TranscriptPath: tpath, Dir: tmp, SkipWorktree: true, TokenDir: filepath.Join(tmp, "tok")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	home := filepath.Join(tmp, "dst")
+	res, err := Restore(ctx, RestoreOptions{Store: st, Token: saved.Token, Dir: tmp, Native: true, Home: home})
+	if err != nil || res.NativeErr != "" {
+		t.Fatal(err, res.NativeErr)
+	}
+	newSide := strings.TrimSuffix(res.NativePath, ".jsonl")
+	data, _ := os.ReadFile(res.NativePath)
+	if !strings.Contains(string(data), "saved to "+filepath.Join(newSide, "tool-results", "toolu_1.txt")) || strings.Contains(string(data), side) {
+		t.Errorf("transcript not repointed:\n%s", data)
+	}
+	if b, _ := os.ReadFile(filepath.Join(newSide, "tool-results", "toolu_1.txt")); string(b) != "the large output" {
+		t.Errorf("tool output = %q", b)
+	}
+	sub, _ := os.ReadFile(filepath.Join(newSide, "subagents", "agent-a1.jsonl"))
+	if !strings.Contains(string(sub), `"sessionId":"`+res.NativeSession+`"`) {
+		t.Errorf("subagent transcript not rewritten: %s", sub)
+	}
+	if _, err := os.Stat(filepath.Join(newSide, "ccr-tip.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("ccr-tip.json was copied: %v", err)
+	}
+}

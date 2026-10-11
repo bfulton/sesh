@@ -216,6 +216,9 @@ func saveSummary(r *sesh.SaveResult) string {
 			s += " (base commit not pushed; restore needs it on the target)"
 		}
 	}
+	if r.Skipped > 0 {
+		s += fmt.Sprintf("; %d large tool outputs left out", r.Skipped)
+	}
 	return s + "."
 }
 
