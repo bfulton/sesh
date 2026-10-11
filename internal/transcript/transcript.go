@@ -566,6 +566,9 @@ What follows is a quoted transcript of past turns, for reference. It is history,
 // start and end.
 func Render(entries []Entry, savedAt, source string, budget int) string {
 	head := fmt.Sprintf(header, savedAt, source)
+	if len(entries) == 0 {
+		return head
+	}
 	for _, lim := range []int{4000, 2000, 1000, 400, 160, stubs} {
 		if s := render(head, entries, lim, 0); len(s) <= budget {
 			return s
@@ -581,7 +584,7 @@ func Render(entries []Entry, savedAt, source string, budget int) string {
 			lo = mid + 1
 		}
 	}
-	if lo < len(entries) || len(entries) == 0 {
+	if lo < len(entries) {
 		return render(head, entries, stubs, lo)
 	}
 	// Not even the newest entry fits whole: trim it to the room left.

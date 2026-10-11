@@ -92,6 +92,15 @@ func TestKeyStaysOutOfSessions(t *testing.T) {
 	if out, _, err := runCmd(t, "key"); err != nil || strings.TrimSpace(out) != key {
 		t.Errorf("key in a terminal: %v, %q", err, out)
 	}
+
+	// With the key in SESH_KEY, which init doesn't write to a file, it says so.
+	other := t.TempDir()
+	t.Setenv("SESH_HOME", other)
+	t.Setenv("SESH_KEY", key)
+	claudeEnv(t, true, false)
+	if out, _, err := runCmd(t, "init"); err != nil || !strings.Contains(out, "SESH_KEY") || strings.Contains(out, filepath.Join(other, "key")) {
+		t.Errorf("init with SESH_KEY inside Claude Code: %v\n%s", err, out)
+	}
 }
 
 // Locally a restore writes a session that claude --resume continues. In a

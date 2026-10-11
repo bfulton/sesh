@@ -119,6 +119,13 @@ func TestRenderTrimsAnOversizedLastMessage(t *testing.T) {
 	}
 }
 
+// A transcript with no messages renders as its header, whatever the budget.
+func TestRenderEmpty(t *testing.T) {
+	if s := Render(nil, "d", "src", 10); !strings.HasPrefix(s, "[sesh] Restored record") {
+		t.Errorf("Render(nil) = %q", s)
+	}
+}
+
 func TestTrim(t *testing.T) {
 	if got := trim("short", 100); got != "short" {
 		t.Errorf("trim short = %q", got)

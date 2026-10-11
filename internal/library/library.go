@@ -179,11 +179,11 @@ func Remember(cacheDir string, v *vault.Vault, tok token.Token, a *archive.Archi
 	e := sesh.CatalogEntry(a, tok, "")
 	if data, err := os.ReadFile(cachePath(dir, e.ID())); err == nil {
 		var old cached
-		if json.Unmarshal(data, &old) == nil && old.Format == cacheFormat {
+		if json.Unmarshal(data, &old) == nil && old.Entry.Session != "" {
 			if old.Entry.Token != e.Token {
 				return fmt.Errorf("session %s is already in the library under another share token", e.ID())
 			}
-			if !e.SavedAt.After(old.Entry.SavedAt) {
+			if old.Format == cacheFormat && !e.SavedAt.After(old.Entry.SavedAt) {
 				return nil
 			}
 		}

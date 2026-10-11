@@ -73,10 +73,14 @@ func cmdInit(args []string) error {
 		return err
 	}
 	if inClaude() {
+		where := keyPath
+		if os.Getenv("SESH_KEY") != "" {
+			where = "SESH_KEY"
+		}
 		fmt.Printf(`Vault set up. Storage: %s
 The vault key is in %s. It isn't printed here: this session's transcript
 would keep it. To set up another device, run sesh key in your own terminal.
-`, redactURL(cfg["store"]), keyPath)
+`, redactURL(cfg["store"]), where)
 		return nil
 	}
 	fmt.Printf(`Vault key:

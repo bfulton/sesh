@@ -225,4 +225,18 @@ func TestRememberKeepsVaultSessions(t *testing.T) {
 	fresh := filepath.Join(tmp, "fresh")
 	Remember(fresh, v, forged.Token, a)
 	check(fresh, "restored before any pull")
+
+	// An entry cached by an older sesh, in an older cache format, is still
+	// the vault's: a forged archive doesn't replace it before the next pull.
+	older := filepath.Join(tmp, "older")
+	if _, err := Open(ctx, st, v, older, true); err != nil {
+		t.Fatal(err)
+	}
+	p := cachePath(filepath.Join(older, v.ID()), "mine")
+	data, _ := os.ReadFile(p)
+	os.WriteFile(p, []byte(strings.Replace(string(data), `"format":2`, `"format":1`, 1)), 0o600)
+	Remember(older, v, forged.Token, a)
+	if lib, err := Open(ctx, nil, v, older, false); err != nil || len(lib.SearchMessages("forged", 5)) != 0 {
+		t.Errorf("an older-format cache entry was replaced by the forged archive (%v)", err)
+	}
 }
