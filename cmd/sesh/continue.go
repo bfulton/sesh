@@ -1,0 +1,240 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/bfulton/sesh/internal/sesh"
+	"github.com/bfulton/sesh/internal/store"
+	"github.com/bfulton/sesh/internal/token"
+	"github.com/bfulton/sesh/internal/transcript"
+	"github.com/bfulton/sesh/internal/vault"
+)
+
+func cmdInit(args []string) error {
+	fs := flag.NewFlagSet("init", flag.ExitOnError)
+	storeFlag := fs.String("store", "", "storage URL: file:///path, s3://bucket/prefix or https://sesh-server")
+	keyFlag := fs.String("key", "", "use this existing vault key (from another device)")
+	fs.Parse(args)
+
+	keyPath := filepath.Join(seshHome(), "key")
+	v, err := loadVault()
+	if err != nil {
+		return err
+	}
+	switch {
+	case *keyFlag != "":
+		k, err := token.Parse(*keyFlag)
+		if err != nil {
+			return fmt.Errorf("vault key: %w", err)
+		}
+		if v != nil && v.Key != k {
+			return fmt.Errorf("a different vault key is already in %s; remove it first", keyPath)
+		}
+		v = &vault.Vault{Key: k}
+	case v == nil:
+		k, err := token.New()
+		if err != nil {
+			return err
+		}
+		v = &vault.Vault{Key: k}
+	}
+	if err := os.MkdirAll(seshHome(), 0o700); err != nil {
+		return err
+	}
+	if os.Getenv("SESH_KEY") == "" {
+		if err := os.WriteFile(keyPath, []byte(v.Key.String()+"\n"), 0o600); err != nil {
+			return err
+		}
+	}
+	cfg := readConfig()
+	if *storeFlag != "" {
+		if _, err := store.Open(*storeFlag); err != nil {
+			return err
+		}
+		cfg["store"] = *storeFlag
+	}
+	if cfg["store"] == "" {
+		cfg["store"] = "file://" + filepath.Join(seshHome(), "store")
+	}
+	if err := writeConfig(cfg); err != nil {
+		return err
+	}
+	fmt.Printf(`Vault key:
+%s
+
+Keep it safe: it is the only way to read your sessions. Anyone with it can.
+Storage: %s
+
+On another device:      sesh init -key <vault key> -store <storage URL>
+In Claude Code cloud:   set SESH_KEY and SESH_STORE in your environment's variables
+`, v.Key, cfg["store"])
+	return nil
+}
+
+func cmdKey([]string) error {
+	v, err := requireVault()
+	if err != nil {
+		return err
+	}
+	fmt.Println(v.Key)
+	return nil
+}
+
+func cmdSave(args []string) error {
+	fs := flag.NewFlagSet("save", flag.ExitOnError)
+	tpath := fs.String("transcript", "", "transcript file (default: this Claude Code session's)")
+	sid := fs.String("session", os.Getenv("CLAUDE_CODE_SESSION_ID"), "session id")
+	dir := fs.String("dir", ".", "working directory to capture")
+	fs.Parse(args)
+	if *tpath == "" {
+		if *sid == "" {
+			return errors.New("no session: pass -transcript, or run inside Claude Code")
+		}
+		p, err := transcript.Find(claudeHome(), *sid)
+		if err != nil {
+			return err
+		}
+		*tpath = p
+	}
+	if *sid == "" {
+		*sid = strings.TrimSuffix(filepath.Base(*tpath), ".jsonl")
+	}
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	v, err := loadVault()
+	if err != nil {
+		return err
+	}
+	res, err := sesh.Save(context.Background(), sesh.SaveOptions{
+		Store: st, SessionID: *sid, TranscriptPath: *tpath, Dir: *dir,
+		Vault: v, TokenDir: tokenDir(), Host: hostLabel(),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, saveSummary(res))
+	fmt.Println(res.Token)
+	return nil
+}
+
+// resolveToken turns a restore argument into a share token: a token itself,
+// or a session id prefix or title words looked up in the vault's catalog.
+func resolveToken(ctx context.Context, st store.Store, arg string) (token.Token, error) {
+	if t, err := token.Parse(arg); err == nil {
+		return t, nil
+	}
+	v, err := loadVault()
+	if err != nil {
+		return token.Token{}, err
+	}
+	if v == nil {
+		return token.Token{}, fmt.Errorf("%q is not a share token, and there is no vault to look it up in", arg)
+	}
+	entries, _, err := v.List(ctx, st)
+	if err != nil {
+		return token.Token{}, err
+	}
+	found := vault.Find(entries, arg)
+	switch len(found) {
+	case 0:
+		return token.Token{}, fmt.Errorf("no saved session matches %q", arg)
+	case 1:
+		return token.Parse(found[0].Token)
+	default:
+		var b strings.Builder
+		fmt.Fprintf(&b, "%d sessions match %q:", len(found), arg)
+		for i, e := range found {
+			if i == 8 {
+				fmt.Fprintf(&b, "\n  …")
+				break
+			}
+			fmt.Fprintf(&b, "\n  %s  %s", e.Session[:8], e.Title)
+		}
+		return token.Token{}, errors.New(b.String())
+	}
+}
+
+func cmdRestore(args []string) error {
+	fs := flag.NewFlagSet("restore", flag.ExitOnError)
+	dir := fs.String("dir", ".", "working directory to restore into")
+	size := fs.Int("budget", budget(), "maximum size of the rendered history in bytes")
+	out := fs.String("o", "", "also write the rendered history to this file")
+	fs.Parse(args)
+	if fs.NArg() != 1 {
+		usage()
+	}
+	st, err := openStore()
+	if err != nil {
+		return err
+	}
+	ctx := context.Background()
+	tok, err := resolveToken(ctx, st, fs.Arg(0))
+	if err != nil {
+		return err
+	}
+	// From a shell there is no live session to load history into, so the
+	// history becomes a native session that claude --resume continues.
+	res, err := sesh.Restore(ctx, sesh.RestoreOptions{
+		Store: st, Token: tok, Dir: *dir, Budget: *size, Native: true, Home: claudeHome(),
+	})
+	if err != nil {
+		return err
+	}
+	fmt.Fprintln(os.Stderr, restoreSummary(res))
+	if *out != "" {
+		if err := os.WriteFile(*out, []byte(res.Rendered), 0o600); err != nil {
+			return err
+		}
+	}
+	if res.NativeSession == "" {
+		return fmt.Errorf("could not write a native session: %s", res.NativeErr)
+	}
+	fmt.Printf("claude --resume %s\n", res.NativeSession)
+	return nil
+}
+
+func saveSummary(r *sesh.SaveResult) string {
+	s := fmt.Sprintf("sesh saved %d messages", r.Turns)
+	switch {
+	case r.Worktree != "":
+		s += "; working copy not saved (" + r.Worktree + ")"
+	default:
+		s += fmt.Sprintf(", %d changed and %d deleted files on %s", len(r.Manifest.Patches), len(r.Manifest.Deleted), shortID(r.Manifest.Base))
+		if !r.Pushed {
+			s += " (base commit not pushed; restore needs it on the target)"
+		}
+	}
+	return s + "."
+}
+
+func restoreSummary(r *sesh.RestoreResult) string {
+	s := fmt.Sprintf("sesh restored %d messages from session %s (saved %s), %d bytes of history",
+		r.Turns, r.Manifest.Session, r.Manifest.SavedAt.Format(time.RFC3339), len(r.Rendered))
+	if r.Branch != "" {
+		s += fmt.Sprintf("; working copy restored on branch %s (%d changed, %d deleted files)",
+			r.Branch, len(r.Manifest.Patches), len(r.Manifest.Deleted))
+	} else {
+		s += "; working copy not restored: " + r.Worktree
+	}
+	s += "."
+	if r.NativeSession != "" {
+		s += "\nFor the real turns, start a new session here with: claude --resume " + r.NativeSession
+	}
+	return s
+}
+
+func shortID(id string) string {
+	if len(id) > 12 {
+		return id[:12]
+	}
+	return id
+}

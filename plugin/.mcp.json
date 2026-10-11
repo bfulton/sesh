@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "sesh": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/sesh",
+      "args": ["mcp"]
+    }
+  }
+}
