@@ -29,6 +29,10 @@ Sesh has no releases yet; every change so far is unreleased.
   someone else's share token. The MCP server sees it at once.
 - `sesh status` on the command line: the vault, the storage and the last hook
   run.
+- `/sesh status`, `list`, `search`, `save` and `restore` in any Claude Code
+  session with the plugin. Claude shows what sesh printed, errors included;
+  after a restore in a cloud session, it says where the session stopped.
+  Arguments reach sesh as data, never through a shell.
 
 ### Changed
 
@@ -46,6 +50,12 @@ Sesh has no releases yet; every change so far is unreleased.
   session; set `SESH_KEY` and `SESH_STORE` in the environment instead.
 - In a cloud session, `sesh restore` prints the history for the model to
   read, since a session for `claude --resume` would never be read there.
+
+### Removed
+
+- `sesh save`, `sesh restore`, `sesh search` and `sesh status` typed as
+  prompts, and the `UserPromptSubmit` hook that caught them. Their replies
+  never showed in the Claude app; use `/sesh` instead.
 
 ### Fixed
 

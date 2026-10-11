@@ -1,10 +1,9 @@
 #!/usr/bin/env bash
 # Runs sesh for the Claude Code plugin, installing it on first use.
 #
-# Hooks call this on every prompt and every turn, so it must be fast and
-# must never break a session: prompts that aren't sesh commands return at
-# once without touching the binary, and if sesh can't be installed the hook
-# does nothing (a typed sesh command gets an explanation instead).
+# The Stop hook calls this after every turn, so it must never break a
+# session: if sesh can't be installed, the hook does nothing. /sesh and the
+# MCP server get the install error instead.
 #
 # Where the binary comes from, in order: $SESH_BIN, a copy installed here
 # earlier, or `go install` of the plugin's pinned version. A sesh on PATH is
@@ -16,17 +15,6 @@ VERSION="${SESH_VERSION:-main}"   # module version: a tag, branch or commit; ins
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.sesh/plugin}"
 BIN="$DATA/bin/sesh"
 STAMP="$DATA/bin/version"
-
-input=""
-if [ "${1:-}" = hook ]; then
-  input=$(cat)
-  case "$input" in
-    *'"UserPromptSubmit"'*)
-      # Only prompts starting with "sesh" are commands.
-      printf '%s' "$input" | grep -qiE '"prompt"[[:space:]]*:[[:space:]]*"[[:space:]]*sesh' || exit 0
-      ;;
-  esac
-fi
 
 install() {
   mkdir -p "$DATA/bin" || return 1
@@ -43,20 +31,16 @@ pick() {
 
 if ! exe=$(pick); then
   if [ "${1:-}" = hook ]; then
-    case "$input" in
-      *'"UserPromptSubmit"'*)
-        msg="sesh couldn't be installed: $(tail -1 "$DATA/install.log" 2>/dev/null). Set SESH_BIN to a sesh binary."
-        printf '{"decision":"block","reason":%s}\n' "$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"
+    # The Stop hook does nothing; /sesh says why it can't run.
+    case "$(cat)" in
+      *'"UserPromptExpansion"'*)
+        msg="sesh printed this for the user's /sesh command: sesh couldn't be installed: $(tail -1 "$DATA/install.log" 2>/dev/null | tr -d '\000-\037'). Set SESH_BIN to a sesh binary."
+        printf '{"hookSpecificOutput":{"hookEventName":"UserPromptExpansion","additionalContext":%s}}\n' "$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"
         ;;
     esac
     exit 0
   fi
-  echo "sesh: couldn't install: $(cat "$DATA/install.log" 2>/dev/null)" >&2
+  echo "sesh: couldn't install: $(cat "$DATA/install.log" 2>/dev/null). Set SESH_BIN to a sesh binary." >&2
   exit 1
 fi
-
-if [ "${1:-}" = hook ]; then
-  printf '%s' "$input" | "$exe" "$@"
-else
-  exec "$exe" "$@"
-fi
+exec "$exe" "$@"

@@ -1,20 +1,6 @@
 {
-  "description": "sesh: keep every session in your vault, and handle sesh commands typed as prompts",
+  "description": "sesh: keep every session in your vault after each turn, and run /sesh commands",
   "hooks": {
-    "UserPromptSubmit": [
-      {
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/sesh",
-            "args": [
-              "hook"
-            ],
-            "timeout": 180
-          }
-        ]
-      }
-    ],
     "Stop": [
       {
         "hooks": [
@@ -25,6 +11,21 @@
               "hook"
             ],
             "timeout": 30
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "matcher": "sesh:sesh",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/sesh",
+            "args": [
+              "hook"
+            ],
+            "timeout": 180
           }
         ]
       }

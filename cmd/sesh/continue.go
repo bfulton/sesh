@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -129,6 +130,12 @@ func cmdSave(args []string) error {
 	if *sid == "" {
 		*sid = strings.TrimSuffix(filepath.Base(*tpath), ".jsonl")
 	}
+	return saveSession(os.Stdout, os.Stderr, *sid, *tpath, *dir)
+}
+
+// saveSession saves a session, writing a summary to ew and its share token
+// to w.
+func saveSession(w, ew io.Writer, sid, tpath, dir string) error {
 	st, err := openStore()
 	if err != nil {
 		return err
@@ -138,14 +145,14 @@ func cmdSave(args []string) error {
 		return err
 	}
 	res, err := sesh.Save(context.Background(), sesh.SaveOptions{
-		Store: st, SessionID: *sid, TranscriptPath: *tpath, Dir: *dir,
+		Store: st, SessionID: sid, TranscriptPath: tpath, Dir: dir,
 		Vault: v, TokenDir: tokenDir(), Host: hostLabel(),
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, saveSummary(res))
-	fmt.Println(res.Token)
+	fmt.Fprintln(ew, saveSummary(res))
+	fmt.Fprintln(w, res.Token)
 	return nil
 }
 
@@ -195,12 +202,20 @@ func cmdRestore(args []string) error {
 	if fs.NArg() != 1 {
 		usage()
 	}
+	return restoreSession(os.Stdout, os.Stderr, fs.Arg(0), *dir, *size, *out)
+}
+
+// restoreSession restores the session target names into dir, writing a
+// summary to ew and to w what continues it: in a cloud session the rendered
+// history, elsewhere the claude --resume command. With out, it also writes
+// the rendered history to that file.
+func restoreSession(w, ew io.Writer, target, dir string, size int, out string) error {
 	st, err := openStore()
 	if err != nil {
 		return err
 	}
 	ctx := context.Background()
-	tok, err := resolveToken(ctx, st, fs.Arg(0))
+	tok, err := resolveToken(ctx, st, target)
 	if err != nil {
 		return err
 	}
@@ -210,22 +225,22 @@ func cmdRestore(args []string) error {
 	// read, so there the history is printed for the model to read instead.
 	cloud := inCloud()
 	res, err := sesh.Restore(ctx, sesh.RestoreOptions{
-		Store: st, Token: tok, Dir: *dir, Budget: *size, Native: !cloud, Home: claudeHome(),
+		Store: st, Token: tok, Dir: dir, Budget: size, Native: !cloud, Home: claudeHome(),
 	})
 	if err != nil {
 		return err
 	}
 	readable := remember(tok, res)
-	fmt.Fprintln(os.Stderr, restoreSummary(res))
-	if *out != "" {
-		if err := os.WriteFile(*out, []byte(res.Rendered), 0o600); err != nil {
+	fmt.Fprintln(ew, restoreSummary(res))
+	if out != "" {
+		if err := os.WriteFile(out, []byte(res.Rendered), 0o600); err != nil {
 			return err
 		}
 	}
 	if cloud {
-		fmt.Print(res.Rendered)
+		fmt.Fprint(w, res.Rendered)
 		if readable {
-			fmt.Printf("\n[sesh] The whole session is in sesh's library as session %s: "+
+			fmt.Fprintf(w, "\n[sesh] The whole session is in sesh's library as session %s: "+
 				"search_messages and read_messages can read what was trimmed or left out above.\n", res.Manifest.Session)
 		}
 		return nil
@@ -233,7 +248,7 @@ func cmdRestore(args []string) error {
 	if res.NativeSession == "" {
 		return fmt.Errorf("could not write a native session: %s", res.NativeErr)
 	}
-	fmt.Printf("claude --resume %s\n", res.NativeSession)
+	fmt.Fprintf(w, "claude --resume %s\n", res.NativeSession)
 	return nil
 }
 

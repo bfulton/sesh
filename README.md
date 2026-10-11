@@ -62,7 +62,7 @@ To continue a session in a terminal:
 
 2. Run the printed command. The session continues with its real turns.
 
-Inside a Claude Code session, type `sesh restore SESSION` as a prompt instead; the conversation loads into the current session.
+Inside a Claude Code session, run `/sesh restore SESSION` instead. In a cloud session the conversation loads into the current session, and Claude says where it stopped. `/sesh` also runs `status`, `list`, `search` and `save`; see [the reference](docs/reference.md#the-sesh-command).
 
 To find something from a past session, run `sesh search WORDS`, or ask an agent that has the sesh MCP server.
 

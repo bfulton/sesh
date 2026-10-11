@@ -38,6 +38,29 @@ func TestPluginFiles(t *testing.T) {
 	if err != nil || fi.Mode()&0o111 == 0 {
 		t.Errorf("launcher missing or not executable: %v", err)
 	}
+
+	// /sesh runs only when the user types it, and runs no shell command: its
+	// arguments reach sesh as data, through the UserPromptExpansion hook.
+	skill, err := os.ReadFile(filepath.Join(root, "plugin", "skills", "sesh", "SKILL.md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"\nname: sesh\n", "\ndisable-model-invocation: true\n"} {
+		if !strings.Contains(string(skill), want) {
+			t.Errorf("SKILL.md lacks %q", want)
+		}
+	}
+	if strings.Contains(string(skill), "!`") || strings.Contains(string(skill), "```!") {
+		t.Error("SKILL.md runs a shell command; its arguments would reach the shell")
+	}
+	var hooks struct {
+		Hooks map[string][]struct{ Matcher string }
+	}
+	data, _ := os.ReadFile(filepath.Join(root, "plugin", "hooks", "hooks.json"))
+	json.Unmarshal(data, &hooks)
+	if exp := hooks.Hooks["UserPromptExpansion"]; len(exp) != 1 || exp[0].Matcher != skillName {
+		t.Errorf("UserPromptExpansion hooks = %+v, want one matching %q", exp, skillName)
+	}
 }
 
 // The launcher runs SESH_BIN, else its own copy for its version, else
@@ -112,19 +135,37 @@ printf '#!/bin/sh\necho installed\n' >"$GOBIN/sesh" && chmod +x "$GOBIN/sesh"`)
 	t.Run("install fails", func(t *testing.T) {
 		env, _ := setup(t, false)
 		out, err := run(env, "", "list")
-		if err == nil || strings.Contains(out, "impostor") || !strings.Contains(out, "go: no network") {
-			t.Errorf("got %q, %v; want an install error", out, err)
+		if err == nil || strings.Contains(out, "impostor") || !strings.Contains(out, "go: no network") || !strings.Contains(out, "SESH_BIN") {
+			t.Errorf("got %q, %v; want an install error naming SESH_BIN", out, err)
 		}
 	})
 	t.Run("install fails in a hook", func(t *testing.T) {
 		env, _ := setup(t, false)
-		out, err := run(env, `{"hook_event_name":"UserPromptSubmit","prompt":"sesh status"}`, "hook")
-		var resp struct{ Decision, Reason string }
-		if err != nil || json.Unmarshal([]byte(out), &resp) != nil {
-			t.Fatalf("got %q, %v; want a JSON block", out, err)
+		out, err := run(env, `{"hook_event_name":"Stop"}`, "hook")
+		if err != nil || out != "" {
+			t.Errorf("got %q, %v; want the hook to do nothing", out, err)
 		}
-		if resp.Decision != "block" || !strings.Contains(resp.Reason, "go: no network") || !strings.Contains(resp.Reason, "SESH_BIN") {
-			t.Errorf("got %+v; want a block naming the error and SESH_BIN", resp)
+	})
+	t.Run("install fails for /sesh", func(t *testing.T) {
+		env, _ := setup(t, false)
+		out, err := run(env, `{"hook_event_name":"UserPromptExpansion","command_name":"sesh:sesh"}`, "hook")
+		var resp struct {
+			HookSpecificOutput struct{ HookEventName, AdditionalContext string }
+		}
+		if err != nil || json.Unmarshal([]byte(out), &resp) != nil {
+			t.Fatalf("got %q, %v; want JSON", out, err)
+		}
+		if c := resp.HookSpecificOutput.AdditionalContext; !strings.Contains(c, "go: no network") || !strings.Contains(c, "SESH_BIN") {
+			t.Errorf("got %+v; want the install error and SESH_BIN", resp)
+		}
+	})
+	t.Run("hook gets the event", func(t *testing.T) {
+		env, data := setup(t, false)
+		stub(t, filepath.Join(data, "bin", "sesh"), `echo "$1 $(cat)"`)
+		write(t, filepath.Join(data, "bin", "version"), "main\n")
+		out, err := run(env, `{"hook_event_name":"Stop"}`, "hook")
+		if err != nil || out != "hook {\"hook_event_name\":\"Stop\"}\n" {
+			t.Errorf("got %q, %v; want the event passed to sesh hook", out, err)
 		}
 	})
 }
