@@ -16,6 +16,7 @@ import (
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
 	"github.com/bfulton/sesh/internal/transcript"
+	"github.com/bfulton/sesh/internal/vault"
 	"github.com/bfulton/sesh/internal/worktree"
 )
 
@@ -28,8 +29,15 @@ type SaveOptions struct {
 	SessionID      string // source session id
 	TranscriptPath string // source transcript file
 	Dir            string // working directory; its git repo, if any, is captured
-	TokenDir       string // where each session's token is kept between saves
-	Now            time.Time
+	SkipWorktree   bool   // save the conversation only, e.g. for a session that isn't live
+
+	// With a vault, the share token derives from the vault key and the
+	// session is added to the vault's catalog. Without one, a random token
+	// is kept in TokenDir between saves.
+	Vault    *vault.Vault
+	TokenDir string
+	Host     string // recorded in the catalog entry
+	Now      time.Time
 }
 
 // SaveResult describes a completed save.
@@ -39,6 +47,7 @@ type SaveResult struct {
 	Turns    int    // user and assistant messages in the transcript
 	Worktree string // why the working copy was not captured, if it wasn't
 	Pushed   bool   // whether the base commit is on a remote
+	Entry    *vault.Entry
 }
 
 // Save captures and uploads a session. A session keeps one token across
@@ -48,12 +57,17 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 	if err != nil {
 		return nil, fmt.Errorf("reading transcript: %w", err)
 	}
-	entries, err := transcript.Parse(data)
-	if err != nil {
+	if _, err := transcript.Parse(data); err != nil {
 		return nil, err
 	}
-	tok, err := sessionToken(o.TokenDir, o.SessionID)
-	if err != nil {
+	meta := transcript.ReadMeta(data)
+	var tok token.Token
+	if o.Vault != nil {
+		if o.SessionID == "" {
+			return nil, errors.New("no session id")
+		}
+		tok = o.Vault.SessionToken(o.SessionID)
+	} else if tok, err = sessionToken(o.TokenDir, o.SessionID); err != nil {
 		return nil, err
 	}
 	if o.Now.IsZero() {
@@ -67,16 +81,13 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 		},
 		Transcript: data,
 	}
-	res := &SaveResult{Token: tok}
-	for _, e := range entries {
-		if e.Kind == "user" || e.Kind == "assistant" {
-			res.Turns++
-		}
-	}
+	res := &SaveResult{Token: tok, Turns: meta.Messages}
 	if a.Memory, err = readMemory(filepath.Join(filepath.Dir(o.TranscriptPath), "memory")); err != nil {
 		return nil, fmt.Errorf("reading memory folder: %w", err)
 	}
-	if c, err := worktree.Take(o.Dir); err != nil {
+	if o.SkipWorktree {
+		res.Worktree = "not captured for this save"
+	} else if c, err := worktree.Take(o.Dir); err != nil {
 		res.Worktree = err.Error()
 	} else {
 		a.Manifest.Repo, a.Manifest.Branch, a.Manifest.Base = c.Repo, c.Branch, c.Base
@@ -88,12 +99,29 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := o.Store.Put(ctx, tok.ID(), blob); err != nil {
+	if err := o.Store.Put(ctx, vault.ArchiveName(tok), blob); err != nil {
 		return nil, fmt.Errorf("uploading: %w", err)
 	}
 	res.Manifest = a.Manifest
 	for p := range a.Patches {
 		res.Manifest.Patches = append(res.Manifest.Patches, p)
+	}
+	if o.Vault != nil {
+		e := vault.Entry{
+			Session: o.SessionID, Source: a.Manifest.Source, Title: meta.Title,
+			Cwd: meta.Cwd, Repo: a.Manifest.Repo, Branch: meta.Branch, Started: meta.Started, Updated: meta.Updated,
+			SavedAt: a.Manifest.SavedAt, Messages: meta.Messages, Bytes: len(data),
+			Token: tok.String(), Host: o.Host,
+		}
+		if a.Manifest.Branch != "" {
+			e.Branch = a.Manifest.Branch
+		}
+		// The catalog is written after the archive, so an entry never points
+		// at an archive that isn't there.
+		if err := o.Vault.Put(ctx, o.Store, e); err != nil {
+			return nil, fmt.Errorf("updating catalog: %w", err)
+		}
+		res.Entry = &e
 	}
 	return res, nil
 }
@@ -155,11 +183,7 @@ type RestoreResult struct {
 // renders its history. A working-copy problem does not stop the history from
 // being restored; it is reported in Worktree instead.
 func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
-	blob, err := o.Store.Get(ctx, o.Token.ID())
-	if err != nil {
-		return nil, err
-	}
-	a, err := archive.Open(blob, o.Token.Key())
+	a, err := Fetch(ctx, o.Store, o.Token)
 	if err != nil {
 		return nil, err
 	}
@@ -215,6 +239,18 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// Fetch downloads and opens the archive a share token names.
+func Fetch(ctx context.Context, st store.Store, tok token.Token) (*archive.Archive, error) {
+	blob, err := st.Get(ctx, vault.ArchiveName(tok))
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, fmt.Errorf("no saved session for this token: %w", err)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return archive.Open(blob, tok.Key())
 }
 
 // newSessionID returns a random UUID in Claude Code's session id form.

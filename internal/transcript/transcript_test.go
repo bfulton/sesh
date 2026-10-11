@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -149,5 +150,28 @@ func TestRealTranscript(t *testing.T) {
 		if len(s) > budget {
 			t.Errorf("over budget")
 		}
+	}
+}
+
+func TestReadMeta(t *testing.T) {
+	in := `{"type":"user","timestamp":"2026-10-10T10:00:00Z","cwd":"/w","gitBranch":"main","message":{"role":"user","content":"<command-name>x</command-name>"}}
+{"type":"user","timestamp":"2026-10-10T10:00:01Z","cwd":"/w","message":{"role":"user","content":"Fix the login bug\nmore detail"}}
+{"type":"assistant","timestamp":"2026-10-10T10:05:00Z","message":{"role":"assistant","content":[{"type":"text","text":"ok"}]}}
+{"type":"ai-title","aiTitle":"Login bug fix"}
+`
+	m := ReadMeta([]byte(in))
+	if m.Title != "Login bug fix" || m.Cwd != "/w" || m.Branch != "main" || m.Messages != 3 {
+		t.Errorf("meta = %+v", m)
+	}
+	if m.Started.Format(time.RFC3339) != "2026-10-10T10:00:00Z" || m.Updated.Format(time.RFC3339) != "2026-10-10T10:05:00Z" {
+		t.Errorf("times = %v %v", m.Started, m.Updated)
+	}
+	m = ReadMeta([]byte(in + `{"type":"custom-title","customTitle":"Mine"}` + "\n"))
+	if m.Title != "Mine" {
+		t.Errorf("custom title not preferred: %q", m.Title)
+	}
+	m = ReadMeta([]byte(strings.Split(in, "\n{\"type\":\"ai-title\"")[0]))
+	if m.Title != "Fix the login bug" {
+		t.Errorf("fallback title = %q", m.Title)
 	}
 }

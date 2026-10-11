@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // ProjectDir returns the directory where Claude Code keeps transcripts for
@@ -95,12 +96,105 @@ func Find(home, sessionID string) (string, error) {
 	return matches[0], nil
 }
 
-// record is the subset of a transcript line that rendering needs.
+// record is the subset of a transcript line that sesh reads.
 type record struct {
 	Type        string          `json:"type"`
 	IsSidechain bool            `json:"isSidechain"`
 	IsMeta      bool            `json:"isMeta"`
 	Message     json.RawMessage `json:"message"`
+	Timestamp   string          `json:"timestamp"`
+	Cwd         string          `json:"cwd"`
+	GitBranch   string          `json:"gitBranch"`
+	CustomTitle string          `json:"customTitle"`
+	AITitle     string          `json:"aiTitle"`
+}
+
+// Meta is what a transcript says about its session.
+type Meta struct {
+	Title    string    // the user's title, else Claude Code's generated title, else the first prompt
+	Cwd      string    // working directory of the first message
+	Branch   string    // git branch of the first message
+	Started  time.Time // first timestamp
+	Updated  time.Time // last timestamp
+	Messages int       // user and assistant messages in the main conversation
+}
+
+// ReadMeta extracts session metadata from a transcript. Unparseable lines
+// are skipped: metadata is best effort.
+func ReadMeta(data []byte) Meta {
+	var m Meta
+	var custom, ai, first string
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
+	for sc.Scan() {
+		var r record
+		if json.Unmarshal(sc.Bytes(), &r) != nil {
+			continue
+		}
+		switch r.Type {
+		case "custom-title":
+			custom = r.CustomTitle
+		case "ai-title":
+			ai = r.AITitle
+		}
+		if ts, err := time.Parse(time.RFC3339Nano, r.Timestamp); err == nil {
+			if m.Started.IsZero() {
+				m.Started = ts
+			}
+			m.Updated = ts
+		}
+		if (r.Type != "user" && r.Type != "assistant") || r.IsSidechain || r.IsMeta {
+			continue
+		}
+		if m.Cwd == "" {
+			m.Cwd, m.Branch = r.Cwd, r.GitBranch
+		}
+		var msg message
+		if json.Unmarshal(r.Message, &msg) != nil {
+			continue
+		}
+		var s string
+		if json.Unmarshal(msg.Content, &s) == nil {
+			if r.Type == "user" && first == "" && !strings.HasPrefix(strings.TrimSpace(s), "<") {
+				first = strings.TrimSpace(s)
+			}
+			m.Messages++
+			continue
+		}
+		var blocks []block
+		if json.Unmarshal(msg.Content, &blocks) != nil {
+			continue
+		}
+		for _, b := range blocks {
+			if b.Type == "text" {
+				m.Messages++
+				break
+			}
+		}
+	}
+	switch {
+	case custom != "":
+		m.Title = custom
+	case ai != "":
+		m.Title = ai
+	default:
+		m.Title = firstLine(first, 80)
+	}
+	return m
+}
+
+func firstLine(s string, max int) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	if len(s) > max {
+		cut := max
+		for cut > 0 && !utf8Start(s[cut]) {
+			cut--
+		}
+		s = s[:cut] + "…"
+	}
+	return s
 }
 
 type message struct {
@@ -267,6 +361,10 @@ func render(head string, entries []Entry, toolLimit, skip int) string {
 
 // trim keeps the first and last parts of s, cutting the middle so the result
 // is about limit bytes, on rune boundaries.
+// Trim keeps the first and last parts of s, cutting the middle so the result
+// is about limit bytes, on rune boundaries.
+func Trim(s string, limit int) string { return trim(s, limit) }
+
 func trim(s string, limit int) string {
 	if len(s) <= limit {
 		return s

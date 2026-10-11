@@ -1,37 +1,52 @@
-// Package store keeps encrypted session archives, one object per id.
+// Package store keeps sesh's encrypted objects. Objects have structured
+// names like "v1/s/<id>"; a store never sees anything but ciphertext.
 package store
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
-// ErrNotFound is returned by Get when no object exists for an id.
-var ErrNotFound = errors.New("no saved session for this token")
+// ErrNotFound is returned by Get when no object has the name.
+var ErrNotFound = errors.New("not found")
 
-// Store holds sealed archives by object id.
+// Store holds encrypted objects by name.
 type Store interface {
-	Put(ctx context.Context, id string, data []byte) error
-	Get(ctx context.Context, id string) ([]byte, error)
+	Put(ctx context.Context, name string, data []byte) error
+	Get(ctx context.Context, name string) ([]byte, error)
+	// List returns the names of all objects under prefix, sorted.
+	List(ctx context.Context, prefix string) ([]string, error)
 }
 
-var validID = regexp.MustCompile(`^[0-9a-f]{32}$`)
+var validName = regexp.MustCompile(`^[a-z0-9]+(/[a-z0-9]+)*$`)
 
-// Key returns the object key for an id within prefix.
-func Key(prefix, id string) (string, error) {
-	if !validID.MatchString(id) {
-		return "", fmt.Errorf("invalid object id %q", id)
+// CheckName reports whether name is a valid object name: lowercase letters
+// and digits in slash-separated parts, at most 200 bytes.
+func CheckName(name string) error {
+	if len(name) > 200 || !validName.MatchString(name) {
+		return fmt.Errorf("invalid object name %q", name)
 	}
-	return strings.TrimSuffix(prefix, "/") + "/sesh/v1/" + id, nil
+	return nil
 }
 
-// Open returns the store named by a URL: file:///path or s3://bucket/prefix.
+// checkPrefix allows "" or a valid name optionally ending in "/".
+func checkPrefix(prefix string) error {
+	if prefix == "" {
+		return nil
+	}
+	return CheckName(strings.TrimSuffix(prefix, "/"))
+}
+
+// Open returns the store named by a URL: file:///path, s3://bucket/prefix,
+// or http(s)://host/ for a sesh server (see Remote).
 func Open(raw string) (Store, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -47,26 +62,27 @@ func Open(raw string) (Store, error) {
 		if u.Host == "" {
 			return nil, errors.New("s3 store URL needs a bucket, like s3://my-bucket/prefix")
 		}
-		return NewS3(u.Host, strings.TrimPrefix(u.Path, "/"))
+		return NewS3(u.Host, strings.Trim(u.Path, "/"))
+	case "http", "https":
+		return NewRemote(raw)
 	default:
-		return nil, fmt.Errorf("unsupported store %q: use file:///path or s3://bucket/prefix", raw)
+		return nil, fmt.Errorf("unsupported store %q: use file:///path, s3://bucket/prefix or https://host", raw)
 	}
 }
 
 // Dir is a store in a local directory.
 type Dir struct{ Root string }
 
-func (d *Dir) path(id string) (string, error) {
-	k, err := Key("", id)
-	if err != nil {
+func (d *Dir) path(name string) (string, error) {
+	if err := CheckName(name); err != nil {
 		return "", err
 	}
-	return filepath.Join(d.Root, filepath.FromSlash(strings.TrimPrefix(k, "/"))), nil
+	return filepath.Join(d.Root, filepath.FromSlash(name)), nil
 }
 
 // Put writes atomically: a reader sees the old object or the new one, never a partial one.
-func (d *Dir) Put(_ context.Context, id string, data []byte) error {
-	p, err := d.path(id)
+func (d *Dir) Put(_ context.Context, name string, data []byte) error {
+	p, err := d.path(name)
 	if err != nil {
 		return err
 	}
@@ -88,8 +104,8 @@ func (d *Dir) Put(_ context.Context, id string, data []byte) error {
 	return os.Rename(tmp.Name(), p)
 }
 
-func (d *Dir) Get(_ context.Context, id string) ([]byte, error) {
-	p, err := d.path(id)
+func (d *Dir) Get(_ context.Context, name string) ([]byte, error) {
+	p, err := d.path(name)
 	if err != nil {
 		return nil, err
 	}
@@ -98,4 +114,33 @@ func (d *Dir) Get(_ context.Context, id string) ([]byte, error) {
 		return nil, ErrNotFound
 	}
 	return data, err
+}
+
+func (d *Dir) List(_ context.Context, prefix string) ([]string, error) {
+	if err := checkPrefix(prefix); err != nil {
+		return nil, err
+	}
+	var names []string
+	err := filepath.WalkDir(d.Root, func(p string, e fs.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return err
+		}
+		if e.IsDir() || strings.HasPrefix(e.Name(), ".") {
+			return nil
+		}
+		rel, err := filepath.Rel(d.Root, p)
+		if err != nil {
+			return err
+		}
+		name := filepath.ToSlash(rel)
+		if strings.HasPrefix(name, prefix) && CheckName(name) == nil {
+			names = append(names, name)
+		}
+		return nil
+	})
+	sort.Strings(names)
+	return names, err
 }

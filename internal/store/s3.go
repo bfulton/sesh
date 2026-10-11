@@ -6,6 +6,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -21,7 +23,7 @@ import (
 type S3 struct {
 	Client *s3.Client
 	Bucket string
-	Prefix string
+	Prefix string // key prefix within the bucket, without leading or trailing slash
 }
 
 // NewS3 returns an S3 store configured from the environment.
@@ -37,31 +39,36 @@ func NewS3(bucket, prefix string) (*S3, error) {
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.UsePathStyle = os.Getenv("SESH_S3_PATH_STYLE") != ""
 	})
-	return &S3{Client: client, Bucket: bucket, Prefix: prefix}, nil
+	return &S3{Client: client, Bucket: bucket, Prefix: strings.Trim(prefix, "/")}, nil
 }
 
-func (s *S3) Put(ctx context.Context, id string, data []byte) error {
-	k, err := Key(s.Prefix, id)
-	if err != nil {
+func (s *S3) key(name string) string {
+	if s.Prefix == "" {
+		return "sesh/" + name
+	}
+	return s.Prefix + "/sesh/" + name
+}
+
+func (s *S3) Put(ctx context.Context, name string, data []byte) error {
+	if err := CheckName(name); err != nil {
 		return err
 	}
-	_, err = s.Client.PutObject(ctx, &s3.PutObjectInput{
+	_, err := s.Client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket:      aws.String(s.Bucket),
-		Key:         aws.String(trimSlash(k)),
+		Key:         aws.String(s.key(name)),
 		Body:        bytes.NewReader(data),
 		ContentType: aws.String("application/octet-stream"),
 	})
 	return err
 }
 
-func (s *S3) Get(ctx context.Context, id string) ([]byte, error) {
-	k, err := Key(s.Prefix, id)
-	if err != nil {
+func (s *S3) Get(ctx context.Context, name string) ([]byte, error) {
+	if err := CheckName(name); err != nil {
 		return nil, err
 	}
 	out, err := s.Client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.Bucket),
-		Key:    aws.String(trimSlash(k)),
+		Key:    aws.String(s.key(name)),
 	})
 	var nsk *types.NoSuchKey
 	if errors.As(err, &nsk) {
@@ -74,9 +81,28 @@ func (s *S3) Get(ctx context.Context, id string) ([]byte, error) {
 	return io.ReadAll(out.Body)
 }
 
-func trimSlash(k string) string {
-	for len(k) > 0 && k[0] == '/' {
-		k = k[1:]
+func (s *S3) List(ctx context.Context, prefix string) ([]string, error) {
+	if err := checkPrefix(prefix); err != nil {
+		return nil, err
 	}
-	return k
+	base := s.key("")
+	p := s3.NewListObjectsV2Paginator(s.Client, &s3.ListObjectsV2Input{
+		Bucket: aws.String(s.Bucket),
+		Prefix: aws.String(base + prefix),
+	})
+	var names []string
+	for p.HasMorePages() {
+		page, err := p.NextPage(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, o := range page.Contents {
+			name := strings.TrimPrefix(aws.ToString(o.Key), base)
+			if CheckName(name) == nil {
+				names = append(names, name)
+			}
+		}
+	}
+	sort.Strings(names)
+	return names, nil
 }

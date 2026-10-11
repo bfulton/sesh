@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -14,19 +15,20 @@ import (
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
 )
 
-const id = "0123456789abcdef0123456789abcdef"
+const name = "v1/s/0123456789abcdef0123456789abcdef"
 
-func exercise(t *testing.T, s Store) {
+// Exercise checks the behavior every Store must have.
+func Exercise(t *testing.T, s Store) {
 	t.Helper()
 	ctx := context.Background()
-	if _, err := s.Get(ctx, id); !errors.Is(err, ErrNotFound) {
+	if _, err := s.Get(ctx, name); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("Get before Put: err = %v, want ErrNotFound", err)
 	}
 	for _, data := range [][]byte{[]byte("first"), bytes.Repeat([]byte{0, 255}, 1<<16)} {
-		if err := s.Put(ctx, id, data); err != nil {
+		if err := s.Put(ctx, name, data); err != nil {
 			t.Fatal(err)
 		}
-		got, err := s.Get(ctx, id)
+		got, err := s.Get(ctx, name)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -34,13 +36,27 @@ func exercise(t *testing.T, s Store) {
 			t.Fatalf("Get returned %d bytes, want %d", len(got), len(data))
 		}
 	}
-	if err := s.Put(ctx, "../../etc/passwd", nil); err == nil {
-		t.Error("Put accepted an invalid id")
+	for _, n := range []string{"v1/c/aa/1", "v1/c/aa/2", "v1/c/bb/1"} {
+		if err := s.Put(ctx, n, []byte(n)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.List(ctx, "v1/c/aa/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"v1/c/aa/1", "v1/c/aa/2"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("List = %v, want %v", got, want)
+	}
+	for _, bad := range []string{"../../etc/passwd", "v1/S/x", "/v1/x", "v1//x", ""} {
+		if err := s.Put(ctx, bad, nil); err == nil {
+			t.Errorf("Put accepted invalid name %q", bad)
+		}
 	}
 }
 
 func TestDir(t *testing.T) {
-	exercise(t, &Dir{Root: t.TempDir()})
+	Exercise(t, &Dir{Root: t.TempDir()})
 }
 
 func TestS3(t *testing.T) {
@@ -56,10 +72,8 @@ func TestS3(t *testing.T) {
 		UsePathStyle: true,
 		Credentials:  credentials.NewStaticCredentialsProvider("id", "secret", ""),
 	})
-	exercise(t, &S3{Client: client, Bucket: "sesh-test", Prefix: "team/"})
-
-	// The object lands under the prefix at sesh/v1/<id>.
-	if _, err := backend.HeadObject("sesh-test", "team/sesh/v1/"+id); err != nil {
+	Exercise(t, &S3{Client: client, Bucket: "sesh-test", Prefix: "team"})
+	if _, err := backend.HeadObject("sesh-test", "team/sesh/"+name); err != nil {
 		t.Errorf("object not at expected key: %v", err)
 	}
 }
@@ -68,7 +82,10 @@ func TestOpen(t *testing.T) {
 	if s, err := Open("file:///tmp/x"); err != nil || s.(*Dir).Root != "/tmp/x" {
 		t.Errorf("file URL: %v %v", s, err)
 	}
-	for _, bad := range []string{"file://", "s3://", "http://x", "nope"} {
+	if s, err := Open("https://sesh.example/"); err != nil || s.(*Remote).Base.Host != "sesh.example" {
+		t.Errorf("https URL: %v %v", s, err)
+	}
+	for _, bad := range []string{"file://", "s3://", "ftp://x", "nope"} {
 		if _, err := Open(bad); err == nil {
 			t.Errorf("Open(%q) succeeded", bad)
 		}

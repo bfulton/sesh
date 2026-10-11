@@ -11,6 +11,7 @@ import (
 
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
+	"github.com/bfulton/sesh/internal/vault"
 )
 
 func run(t *testing.T, dir string, args ...string) string {
@@ -168,5 +169,43 @@ func TestSessionTokenRejectsPathTricks(t *testing.T) {
 		if _, err := sessionToken(t.TempDir(), bad); err == nil {
 			t.Errorf("sessionToken(%q) succeeded", bad)
 		}
+	}
+}
+
+func TestSaveWithVault(t *testing.T) {
+	tmp := t.TempDir()
+	tpath := filepath.Join(tmp, "session.jsonl")
+	os.WriteFile(tpath, []byte(`{"type":"ai-title","aiTitle":"Codeword drill"}`+"\n"+transcriptJSONL), 0o600)
+	st := &store.Dir{Root: filepath.Join(tmp, "store")}
+	key, _ := token.New()
+	v := &vault.Vault{Key: key}
+	ctx := context.Background()
+
+	// Two devices with no shared local state save the same session.
+	var toks []token.Token
+	for _, dev := range []string{"laptop", "cloud"} {
+		res, err := Save(ctx, SaveOptions{Store: st, SessionID: "sess-v", TranscriptPath: tpath, Dir: tmp,
+			SkipWorktree: true, Vault: v, TokenDir: filepath.Join(tmp, dev), Host: dev})
+		if err != nil {
+			t.Fatal(err)
+		}
+		toks = append(toks, res.Token)
+	}
+	if toks[0] != toks[1] || toks[0] != v.SessionToken("sess-v") {
+		t.Fatal("devices sharing a vault saved the session under different tokens")
+	}
+	entries, bad, err := v.List(ctx, st)
+	if err != nil || bad != 0 || len(entries) != 1 {
+		t.Fatalf("catalog: %+v bad=%d err=%v", entries, bad, err)
+	}
+	e := entries[0]
+	if e.Title != "Codeword drill" || e.Token != toks[0].String() || e.Host != "cloud" || e.Messages != 2 {
+		t.Errorf("entry = %+v", e)
+	}
+	// The catalog's token opens the session.
+	tok, _ := token.Parse(e.Token)
+	a, err := Fetch(ctx, st, tok)
+	if err != nil || !strings.Contains(string(a.Transcript), "garnet4242") {
+		t.Fatalf("Fetch: %v", err)
 	}
 }

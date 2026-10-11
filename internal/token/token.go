@@ -98,6 +98,19 @@ func value(c byte) (byte, error) {
 	return 0, fmt.Errorf("token is not valid: unexpected character %q", c)
 }
 
+// Derive returns a token derived from t for a purpose named by info.
+// Different info strings give independent tokens; none reveals t.
+func (t Token) Derive(info string) Token {
+	var d Token
+	copy(d[:], derive(t, info, Size))
+	return d
+}
+
+// Bytes returns n bytes derived from the token for a purpose named by info.
+func (t Token) Bytes(info string, n int) []byte {
+	return derive(t, info, n)
+}
+
 // Key returns the 32-byte encryption key derived from the token.
 func (t Token) Key() []byte {
 	return derive(t, "sesh key v1", 32)
