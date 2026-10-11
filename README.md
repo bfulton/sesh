@@ -14,7 +14,7 @@ In Claude Code:
 /plugin install sesh --marketplace bfulton/sesh
 ```
 
-The plugin installs the `sesh` binary on first use, which needs Go 1.24 or later, or uses `sesh` from your `PATH`. To install the binary yourself:
+The plugin installs the `sesh` binary on first use, which needs Go 1.24 or later. To use a binary you installed or built yourself, set `SESH_BIN` to its path; the plugin doesn't use `sesh` from your `PATH`, since other tools share the name. To install the binary yourself:
 
 ```
 go install github.com/bfulton/sesh/cmd/sesh@main

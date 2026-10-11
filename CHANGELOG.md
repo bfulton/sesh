@@ -43,3 +43,6 @@ Sesh has no releases yet; every change so far is unreleased.
   history. (#3)
 - Sync no longer alternates between two transcripts that share a session id.
   (#4)
+- The plugin no longer runs a `sesh` it finds on `PATH` or in `~/go/bin`,
+  which could be another tool of the same name or a different version. It
+  runs `SESH_BIN`, or the copy it installed.

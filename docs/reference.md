@@ -128,5 +128,5 @@ A vault's owner is the first bearer to write in it. Bearers are stored as SHA-25
 | --- | --- |
 | `plugin/hooks/hooks.json` | `UserPromptSubmit` and `Stop` hooks, both running `scripts/sesh hook` |
 | `plugin/.mcp.json` | The MCP server |
-| `plugin/scripts/sesh` | Finds sesh (`$SESH_BIN`, a copy it installed, `PATH`, then `$GOBIN` or `~/go/bin`) or installs it with `go install`, once per `SESH_VERSION` |
+| `plugin/scripts/sesh` | Runs `$SESH_BIN`, else the copy it installed, else installs one with `go install`, once per `SESH_VERSION`. It never runs a `sesh` from `PATH` |
 | `.claude-plugin/marketplace.json` | Makes the repository a plugin marketplace |

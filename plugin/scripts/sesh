@@ -7,7 +7,9 @@
 # does nothing (a typed sesh command gets an explanation instead).
 #
 # Where the binary comes from, in order: $SESH_BIN, a copy installed here
-# earlier, sesh on PATH, or `go install` of the plugin's pinned version.
+# earlier, or `go install` of the plugin's pinned version. A sesh on PATH is
+# never used: other tools share the name, and it would skip the pin. Set
+# SESH_BIN to use your own build.
 set -u
 
 VERSION="${SESH_VERSION:-main}"   # module version: a tag, branch or commit; installed once per value
@@ -36,11 +38,6 @@ install() {
 pick() {
   if [ -n "${SESH_BIN:-}" ] && [ -x "$SESH_BIN" ]; then echo "$SESH_BIN"; return 0; fi
   if [ -x "$BIN" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$VERSION" ]; then echo "$BIN"; return 0; fi
-  if command -v sesh >/dev/null 2>&1 && [ "$(command -v sesh)" != "$0" ]; then command -v sesh; return 0; fi
-  # go install puts binaries in $GOBIN or $GOPATH/bin (~/go/bin), often not on PATH.
-  for d in "${GOBIN:-}" "${GOPATH:-$HOME/go}/bin"; do
-    if [ -n "$d" ] && [ -x "$d/sesh" ]; then echo "$d/sesh"; return 0; fi
-  done
   install && echo "$BIN"
 }
 
@@ -48,7 +45,7 @@ if ! exe=$(pick); then
   if [ "${1:-}" = hook ]; then
     case "$input" in
       *'"UserPromptSubmit"'*)
-        msg="sesh couldn't be installed: $(tail -1 "$DATA/install.log" 2>/dev/null). Set SESH_BIN, or put sesh on PATH."
+        msg="sesh couldn't be installed: $(tail -1 "$DATA/install.log" 2>/dev/null). Set SESH_BIN to a sesh binary."
         printf '{"decision":"block","reason":%s}\n' "$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"
         ;;
     esac
