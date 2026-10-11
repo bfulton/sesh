@@ -141,7 +141,26 @@ func TestLoadCacheOnePerSession(t *testing.T) {
 	if len(got) != 1 || got["s1"].Entry.Title != "newest" {
 		t.Fatalf("loadCache = %+v", got)
 	}
+	if files, _ := filepath.Glob(filepath.Join(dir, "*.json")); len(files) != 1 || files[0] != cacheName(dir, "s1") {
+		t.Errorf("cache files left: %v, want only %s", files, cacheName(dir, "s1"))
+	}
+}
+
+// A lone file named the old way (from the session's id and folder) is
+// renamed, so a later save replaces it instead of adding a second file.
+func TestLoadCacheRenamesLegacyFile(t *testing.T) {
+	dir := t.TempDir()
+	old := cached{Format: cacheFormat, Entry: vault.Entry{Session: "s1", Title: "old", SavedAt: time.Now().UTC()}}
+	data, _ := json.Marshal(old)
+	os.WriteFile(cacheName(dir, "s1@-some-folder"), data, 0o600)
+	if _, err := loadCache(dir); err != nil {
+		t.Fatal(err)
+	}
+	newer := &cached{Format: cacheFormat, Entry: vault.Entry{Session: "s1", Title: "new", SavedAt: time.Now().UTC().Add(time.Minute)}}
+	if err := writeCached(dir, newer); err != nil {
+		t.Fatal(err)
+	}
 	if files, _ := filepath.Glob(filepath.Join(dir, "*.json")); len(files) != 1 {
-		t.Errorf("cache files left: %v", files)
+		t.Errorf("cache files: %v, want one", files)
 	}
 }

@@ -103,6 +103,15 @@ func loadCache(dir string) (map[string]*cached, error) {
 		}
 		out[id], file[id] = &c, p
 	}
+	// Survivors named the old way take the current name, so the next write
+	// replaces them rather than adding a second file.
+	for id, p := range file {
+		if want := cacheName(dir, id); p != want {
+			if err := os.Rename(p, want); err != nil {
+				return nil, err
+			}
+		}
+	}
 	return out, nil
 }
 
@@ -164,13 +173,18 @@ func fetch(ctx context.Context, st store.Store, e vault.Entry) (*cached, error) 
 	return &cached{Format: cacheFormat, Entry: e, Entries: entries}, nil
 }
 
+// cacheName is the cache file for a session.
+func cacheName(dir, id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return filepath.Join(dir, hex.EncodeToString(sum[:16])+".json")
+}
+
 func writeCached(dir string, c *cached) error {
 	data, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	sum := sha256.Sum256([]byte(c.Entry.ID()))
-	p := filepath.Join(dir, hex.EncodeToString(sum[:16])+".json")
+	p := cacheName(dir, c.Entry.ID())
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
