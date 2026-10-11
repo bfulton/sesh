@@ -76,7 +76,7 @@ func cmdInit(args []string) error {
 		fmt.Printf(`Vault set up. Storage: %s
 The vault key is in %s. It isn't printed here: this session's transcript
 would keep it. To set up another device, run sesh key in your own terminal.
-`, cfg["store"], keyPath)
+`, redactURL(cfg["store"]), keyPath)
 		return nil
 	}
 	fmt.Printf(`Vault key:

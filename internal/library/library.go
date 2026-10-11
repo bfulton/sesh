@@ -97,11 +97,13 @@ func loadCache(dir string) (map[string]*cached, error) {
 	return out, nil
 }
 
-// pull downloads sessions that are new or saved since they were cached.
+// pull downloads sessions that are new or saved since they were cached, and
+// any cached under another token than the catalog's: the catalog decides
+// what a vault session id holds.
 func (l *Library) pull(ctx context.Context, st store.Store, dir string, entries []vault.Entry) error {
 	var todo []vault.Entry
 	for _, e := range entries {
-		if c, ok := l.sessions[e.ID()]; !ok || c.Format != cacheFormat || e.SavedAt.After(c.Entry.SavedAt) {
+		if c, ok := l.sessions[e.ID()]; !ok || c.Format != cacheFormat || c.Entry.Token != e.Token || e.SavedAt.After(c.Entry.SavedAt) {
 			todo = append(todo, e)
 		}
 	}
@@ -164,6 +166,11 @@ func newCached(e vault.Entry, data []byte) (*cached, error) {
 // sessions. A session restored from someone else's share token is in no
 // catalog the library pulls. A copy cached from the same save or a later
 // one is kept as it is.
+//
+// An archive names its own session id, and anyone can make one that names
+// another's. So a session cached under another token is never replaced
+// here, and one this adds is replaced by the next pull if the vault's
+// catalog holds that id under its own token.
 func Remember(cacheDir string, v *vault.Vault, tok token.Token, a *archive.Archive) error {
 	dir := filepath.Join(cacheDir, v.ID())
 	if err := os.MkdirAll(dir, 0o700); err != nil {
@@ -172,8 +179,13 @@ func Remember(cacheDir string, v *vault.Vault, tok token.Token, a *archive.Archi
 	e := sesh.CatalogEntry(a, tok, "")
 	if data, err := os.ReadFile(cachePath(dir, e.ID())); err == nil {
 		var old cached
-		if json.Unmarshal(data, &old) == nil && old.Format == cacheFormat && !e.SavedAt.After(old.Entry.SavedAt) {
-			return nil
+		if json.Unmarshal(data, &old) == nil && old.Format == cacheFormat {
+			if old.Entry.Token != e.Token {
+				return fmt.Errorf("session %s is already in the library under another share token", e.ID())
+			}
+			if !e.SavedAt.After(old.Entry.SavedAt) {
+				return nil
+			}
 		}
 	}
 	c, err := newCached(e, a.Transcript)

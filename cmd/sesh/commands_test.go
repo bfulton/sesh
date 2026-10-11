@@ -64,10 +64,17 @@ func TestKeyStaysOutOfSessions(t *testing.T) {
 		t.Error("init in a cloud session wrote a key")
 	}
 
+	// A storage URL with credentials, set up earlier in a terminal.
+	if err := writeConfig(map[string]string{"store": "https://user:secret@sesh.example"}); err != nil {
+		t.Fatal(err)
+	}
 	claudeEnv(t, true, false)
 	out, _, err := runCmd(t, "init")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if strings.Contains(out, "secret") || !strings.Contains(out, "https://…@sesh.example") {
+		t.Errorf("init inside Claude Code printed the storage credentials:\n%s", out)
 	}
 	data, err := os.ReadFile(filepath.Join(home, "key"))
 	if err != nil {
