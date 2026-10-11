@@ -65,7 +65,7 @@ With the plugin installed, these work as prompts in any Claude Code session. Non
 | `SESH_VERSION` | The version the plugin installs: a tag, branch or commit (default `main`) |
 | `SESH_S3_PATH_STYLE` | Any value turns on path-style S3 addressing, for stores that need it |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | S3 credentials, or any other source the AWS SDK reads |
-| `AWS_REGION` | S3 region (default `auto`) |
+| `AWS_REGION` or `AWS_DEFAULT_REGION` | S3 region (default `auto`) |
 | `AWS_ENDPOINT_URL_S3` | S3 endpoint, for stores other than AWS such as R2 or MinIO |
 
 ## Storage

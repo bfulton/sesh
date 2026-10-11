@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -44,7 +43,7 @@ func commands(v any) []string {
 	switch v := v.(type) {
 	case map[string]any:
 		for k, x := range v {
-			if s, ok := x.(string); ok && k == "command" && strings.Contains(s, "/") {
+			if s, ok := x.(string); ok && k == "command" {
 				out = append(out, s)
 			}
 			out = append(out, commands(x)...)

@@ -28,7 +28,9 @@ Sesh has no releases yet; every change so far is unreleased.
 ### Changed
 
 - Sessions are identified by session id alone, and share tokens derive from
-  it. Vaults created before this change can't be read; create a new one. (#4)
+  it. Vaults created before this change are unsupported: a session can be
+  listed twice, and its old share token stops following new saves. Create a
+  new vault. (#4)
 - A session's catalog entry shows its latest folder and branch. (#4)
 
 ### Fixed
