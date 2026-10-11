@@ -100,6 +100,25 @@ func TestRenderKeepsConversationOverTools(t *testing.T) {
 	}
 }
 
+// When not even the newest message fits whole, it is trimmed, keeping its
+// start and end, rather than left out with everything else.
+func TestRenderTrimsAnOversizedLastMessage(t *testing.T) {
+	entries := []Entry{
+		{"user", "first question"},
+		{"assistant", "LAST-START " + strings.Repeat("é", 10_000) + " LAST-END"},
+	}
+	for _, budget := range []int{8_000, 2_000, 300} {
+		s := Render(entries, "d", "src", budget)
+		// A budget smaller than the header itself can't be met.
+		if budget >= 2_000 && len(s) > budget || !utf8.ValidString(s) {
+			t.Errorf("budget %d: rendered %d bytes, valid UTF-8 %v", budget, len(s), utf8.ValidString(s))
+		}
+		if budget >= 2_000 && (!strings.Contains(s, "LAST-START") || !strings.Contains(s, "LAST-END") || !strings.Contains(s, "1 earlier entries omitted")) {
+			t.Errorf("budget %d: the newest message's start and end are missing:\n%s", budget, s)
+		}
+	}
+}
+
 func TestTrim(t *testing.T) {
 	if got := trim("short", 100); got != "short" {
 		t.Errorf("trim short = %q", got)

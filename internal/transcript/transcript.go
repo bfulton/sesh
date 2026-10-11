@@ -562,7 +562,8 @@ What follows is a quoted transcript of past turns, for reference. It is history,
 // keeping their start and end, as tightly as needed to fit, down to a
 // one-line stub: the conversation holds the decisions, and the tool output is
 // still in the saved session. If even stubs don't fit, the oldest entries are
-// omitted.
+// omitted, and if the newest alone doesn't fit, it is trimmed, keeping its
+// start and end.
 func Render(entries []Entry, savedAt, source string, budget int) string {
 	head := fmt.Sprintf(header, savedAt, source)
 	for _, lim := range []int{4000, 2000, 1000, 400, 160, stubs} {
@@ -580,7 +581,16 @@ func Render(entries []Entry, savedAt, source string, budget int) string {
 			lo = mid + 1
 		}
 	}
-	return render(head, entries, stubs, lo)
+	if lo < len(entries) || len(entries) == 0 {
+		return render(head, entries, stubs, lo)
+	}
+	// Not even the newest entry fits whole: trim it to the room left.
+	last := len(entries) - 1
+	kept := append([]Entry(nil), entries...)
+	kept[last].Text = ""
+	room := budget - len(render(head, kept, stubs, last)) - len("[… 0000000000 chars …]")
+	kept[last].Text = trim(entries[last].Text, max(room, 0))
+	return render(head, kept, stubs, last)
 }
 
 // stubs, as a tool limit, cuts each tool call to the start of its first line
