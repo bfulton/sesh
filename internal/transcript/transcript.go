@@ -345,13 +345,14 @@ type record struct {
 	GitBranch   string          `json:"gitBranch"`
 	CustomTitle string          `json:"customTitle"`
 	AITitle     string          `json:"aiTitle"`
+	Relocated   string          `json:"relocatedCwd"`
 }
 
 // Meta is what a transcript says about its session.
 type Meta struct {
 	Title    string    // the user's title, else Claude Code's generated title, else the first prompt
-	Cwd      string    // working directory of the first message
-	Branch   string    // git branch of the first message
+	Cwd      string    // working directory now: of the latest message, or a later move
+	Branch   string    // git branch of the latest message that names one
 	Started  time.Time // first timestamp
 	Updated  time.Time // last timestamp
 	Messages int       // user and assistant messages in the main conversation
@@ -374,6 +375,11 @@ func ReadMeta(data []byte) Meta {
 			custom = r.CustomTitle
 		case "ai-title":
 			ai = r.AITitle
+		case "relocated":
+			// Claude Code moved the session to another folder.
+			if r.Relocated != "" {
+				m.Cwd = r.Relocated
+			}
 		}
 		if ts, err := time.Parse(time.RFC3339Nano, r.Timestamp); err == nil {
 			if m.Started.IsZero() {
@@ -384,8 +390,11 @@ func ReadMeta(data []byte) Meta {
 		if (r.Type != "user" && r.Type != "assistant") || r.IsSidechain || r.IsMeta {
 			continue
 		}
-		if m.Cwd == "" {
-			m.Cwd, m.Branch = r.Cwd, r.GitBranch
+		if r.Cwd != "" {
+			m.Cwd = r.Cwd
+		}
+		if r.GitBranch != "" {
+			m.Branch = r.GitBranch
 		}
 		var msg message
 		if json.Unmarshal(r.Message, &msg) != nil {

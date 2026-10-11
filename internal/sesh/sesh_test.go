@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
@@ -191,7 +192,7 @@ func TestSaveWithVault(t *testing.T) {
 		}
 		toks = append(toks, res.Token)
 	}
-	if toks[0] != toks[1] || toks[0] != v.SessionToken(SessionKey("sess-v", tpath)) {
+	if toks[0] != toks[1] || toks[0] != v.SessionToken("sess-v") {
 		t.Fatal("devices sharing a vault saved the session under different tokens")
 	}
 	entries, bad, err := v.List(ctx, st)
@@ -210,45 +211,51 @@ func TestSaveWithVault(t *testing.T) {
 	}
 }
 
-// Two transcripts with the same session id in different project folders are
-// different sessions; saving them in either order keeps both.
-func TestSameSessionIDInTwoFolders(t *testing.T) {
+// Claude Code moves a session's transcript to another project folder when
+// the session changes folder. It is still one session: one catalog entry,
+// one share token, holding the latest save.
+func TestSessionMovesFolder(t *testing.T) {
 	tmp := t.TempDir()
 	st := &store.Dir{Root: filepath.Join(tmp, "store")}
 	key, _ := token.New()
 	v := &vault.Vault{Key: key}
 	ctx := context.Background()
-	mk := func(folder, word string) string {
-		p := filepath.Join(tmp, "projects", folder, "same-id.jsonl")
-		os.MkdirAll(filepath.Dir(p), 0o700)
-		os.WriteFile(p, []byte(`{"type":"user","message":{"role":"user","content":"codeword `+word+`"}}`+"\n"), 0o600)
-		return p
+	// As Claude Code does: the same transcript file moves to the new
+	// project folder, gains a relocated record, and the session goes on.
+	before := filepath.Join(tmp, "projects", "-repo", "moving-id.jsonl")
+	os.MkdirAll(filepath.Dir(before), 0o700)
+	os.WriteFile(before, []byte(`{"type":"user","cwd":"/repo","message":{"role":"user","content":"before the move"}}`+"\n"), 0o600)
+	now := time.Now().UTC()
+	r1, err := Save(ctx, SaveOptions{Store: st, SessionID: "moving-id", TranscriptPath: before, SkipWorktree: true, Vault: v, Now: now})
+	if err != nil {
+		t.Fatal(err)
 	}
-	real, nested := mk("-home-user-repo", "real"), mk("-tmp-scratch", "nested")
-	for _, order := range [][]string{{real, nested}, {nested, real}} {
-		for _, p := range order {
-			if _, err := Save(ctx, SaveOptions{Store: st, SessionID: "same-id", TranscriptPath: p, SkipWorktree: true, Vault: v}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		entries, _, err := v.List(ctx, st)
-		if err != nil || len(entries) != 2 {
-			t.Fatalf("entries = %+v, %v; want two sessions", entries, err)
-		}
-		for _, e := range entries {
-			tok, _ := token.Parse(e.Token)
-			a, err := Fetch(ctx, st, tok)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := "real"
-			if strings.Contains(e.Key, "scratch") {
-				want = "nested"
-			}
-			if !strings.Contains(string(a.Transcript), "codeword "+want) {
-				t.Errorf("entry %s holds the other session's transcript", e.Key)
-			}
-		}
+	after := filepath.Join(tmp, "projects", "-repo-wt", "moving-id.jsonl")
+	os.MkdirAll(filepath.Dir(after), 0o700)
+	if err := os.Rename(before, after); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.OpenFile(after, os.O_APPEND|os.O_WRONLY, 0o600)
+	f.WriteString(`{"type":"relocated","sessionId":"moving-id","relocatedCwd":"/repo/wt"}` + "\n" +
+		`{"type":"user","cwd":"/repo/wt","message":{"role":"user","content":"after the move"}}` + "\n")
+	f.Close()
+	r2, err := Save(ctx, SaveOptions{Store: st, SessionID: "moving-id", TranscriptPath: after, SkipWorktree: true, Vault: v, Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.Token != r2.Token {
+		t.Error("the session's share token changed when it moved")
+	}
+	entries, _, err := v.List(ctx, st)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v, %v; want one session", entries, err)
+	}
+	if e := entries[0]; e.Cwd != "/repo/wt" || e.Token != r2.Token.String() {
+		t.Errorf("entry = %+v, want the latest save", e)
+	}
+	a, err := Fetch(ctx, st, r2.Token)
+	if err != nil || !strings.Contains(string(a.Transcript), "after the move") {
+		t.Fatalf("Fetch: %v", err)
 	}
 }
 

@@ -88,9 +88,9 @@ func TestCatalog(t *testing.T) {
 
 func TestHandleDisambiguates(t *testing.T) {
 	entries := []Entry{
-		{Key: "8c68bc7c-1@-home-user-sesh", Session: "8c68bc7c-1", Title: "sesh: init"},
-		{Key: "8c68bc7c-1@-tmp-cli1", Session: "8c68bc7c-1", Title: "Pong"},
-		{Key: "aaaaaaaa-2@-x", Session: "aaaaaaaa-2", Title: "Other"},
+		{Session: "8c68bc7c-1", Title: "sesh: init"},
+		{Session: "8c68bc7c-2", Title: "Pong"},
+		{Session: "aaaaaaaa-3", Title: "Other"},
 	}
 	for _, e := range entries {
 		h := Handle(entries, e)

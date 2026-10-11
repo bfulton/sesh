@@ -176,6 +176,23 @@ func TestReadMeta(t *testing.T) {
 	}
 }
 
+// Claude Code moves a session by moving its transcript and appending a
+// relocated record; the session's folder and branch are its latest.
+func TestReadMetaFollowsMoves(t *testing.T) {
+	in := `{"type":"user","cwd":"/repo","gitBranch":"main","message":{"role":"user","content":"start"}}
+{"type":"relocated","relocatedCwd":"/repo/.claude/worktrees/w1"}
+`
+	if m := ReadMeta([]byte(in)); m.Cwd != "/repo/.claude/worktrees/w1" || m.Branch != "main" {
+		t.Errorf("after the move: %+v", m)
+	}
+	in += `{"type":"user","cwd":"/repo/.claude/worktrees/w1","gitBranch":"w1","message":{"role":"user","content":"go on"}}
+{"type":"assistant","isSidechain":true,"cwd":"/elsewhere","gitBranch":"x","message":{"role":"assistant","content":[{"type":"text","text":"subagent"}]}}
+`
+	if m := ReadMeta([]byte(in)); m.Cwd != "/repo/.claude/worktrees/w1" || m.Branch != "w1" {
+		t.Errorf("after more messages: %+v", m)
+	}
+}
+
 // A compacted session: claude --resume follows parents from the last message
 // back to the compaction boundary, so it loads the prompt after it, plus the
 // prompt of the turn the compaction interrupted, which the summary names.
