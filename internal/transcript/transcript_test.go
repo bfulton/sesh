@@ -175,3 +175,37 @@ func TestReadMeta(t *testing.T) {
 		t.Errorf("fallback title = %q", m.Title)
 	}
 }
+
+// A compacted session: claude --resume follows parents from the last message
+// back to the compaction boundary, so it loads the prompt after it, plus the
+// prompt of the turn the compaction interrupted, which the summary names.
+func TestReadResumable(t *testing.T) {
+	in := `{"type":"user","uuid":"p1","parentUuid":null,"message":{"role":"user","content":"first prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"p1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{}}]}}
+{"type":"user","uuid":"r1","parentUuid":"a1","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}
+{"type":"user","uuid":"p2","parentUuid":"r1","message":{"role":"user","content":[{"type":"text","text":"second prompt"}]}}
+{"type":"user","uuid":"s1","parentUuid":"p2","isSidechain":true,"message":{"role":"user","content":"subagent task"}}
+{"type":"system","subtype":"compact_boundary","uuid":"b1","parentUuid":null,"logicalParentUuid":"p2"}
+{"type":"user","uuid":"c1","parentUuid":"b1","isCompactSummary":true,"summarizedTurnPromptUuids":["p2"],"message":{"role":"user","content":"This session is being continued…"}}
+{"type":"user","uuid":"m1","parentUuid":"c1","isMeta":true,"message":{"role":"user","content":"harness note"}}
+{"type":"user","uuid":"p3","parentUuid":"m1","message":{"role":"user","content":"third prompt"}}
+{"type":"assistant","uuid":"a3","parentUuid":"p3","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+{"type":"last-prompt","lastPrompt":"third prompt","leafUuid":"a3"}
+`
+	got := ReadResumable([]byte(in))
+	if want := (Resumable{Compactions: 1, Prompts: 3, Loaded: 2}); got != want {
+		t.Errorf("ReadResumable = %+v, want %+v", got, want)
+	}
+	entries, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Text, "continued") {
+			t.Errorf("compaction summary parsed as a message: %+v", e)
+		}
+	}
+	if got := ReadResumable([]byte(in[:strings.Index(in, `{"type":"system"`)])); got != (Resumable{Prompts: 2, Loaded: 2}) {
+		t.Errorf("uncompacted: %+v", got)
+	}
+}

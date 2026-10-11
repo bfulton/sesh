@@ -174,9 +174,10 @@ type RestoreResult struct {
 	Worktree string // why the working copy was not restored, if it wasn't
 	Archive  *archive.Archive
 
-	NativeSession string // id of the native session written, if any
-	NativePath    string // its transcript file
-	NativeErr     string // why it couldn't be written, if Native was asked for
+	NativeSession string               // id of the native session written, if any
+	NativePath    string               // its transcript file
+	NativeErr     string               // why it couldn't be written, if Native was asked for
+	Resumable     transcript.Resumable // how much of it claude --resume loads
 }
 
 // Restore downloads a saved session, restores its working copy into Dir and
@@ -225,6 +226,7 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 			res.NativeErr = err.Error()
 		} else {
 			res.NativeSession = id
+			res.Resumable = transcript.ReadResumable(a.Transcript)
 		}
 	}
 

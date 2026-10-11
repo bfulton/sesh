@@ -90,10 +90,13 @@ func cmdKey([]string) error {
 func cmdSave(args []string) error {
 	fs := flag.NewFlagSet("save", flag.ExitOnError)
 	tpath := fs.String("transcript", "", "transcript file (default: this Claude Code session's)")
-	sid := fs.String("session", os.Getenv("CLAUDE_CODE_SESSION_ID"), "session id")
+	sid := fs.String("session", "", "session id (default: the transcript's, or this Claude Code session's)")
 	dir := fs.String("dir", ".", "working directory to capture")
 	fs.Parse(args)
 	if *tpath == "" {
+		if *sid == "" {
+			*sid = os.Getenv("CLAUDE_CODE_SESSION_ID")
+		}
 		if *sid == "" {
 			return errors.New("no session: pass -transcript, or run inside Claude Code")
 		}
@@ -228,6 +231,10 @@ func restoreSummary(r *sesh.RestoreResult) string {
 	s += "."
 	if r.NativeSession != "" {
 		s += "\nFor the real turns, start a new session here with: claude --resume " + r.NativeSession
+		if n := r.Resumable; n.Compactions > 0 {
+			s += fmt.Sprintf("\nIt was compacted, so Claude Code resumes it from the last compaction: %d of its %d prompts, "+
+				"with a summary of the rest. sesh show %s prints the whole conversation.", n.Loaded, n.Prompts, shortID(r.Manifest.Session))
+		}
 	}
 	return s
 }

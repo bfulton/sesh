@@ -24,8 +24,13 @@ import (
 // the full session stays in the store.
 const maxToolText = 4000
 
+// cacheFormat changes when the way sessions are parsed changes, so that the
+// next pull re-reads sessions cached the old way.
+const cacheFormat = 2
+
 // cached is one session's local copy.
 type cached struct {
+	Format  int                `json:"format"`
 	Entry   vault.Entry        `json:"entry"`
 	Entries []transcript.Entry `json:"entries"`
 }
@@ -94,7 +99,7 @@ func loadCache(dir string) (map[string]*cached, error) {
 func (l *Library) pull(ctx context.Context, st store.Store, dir string, entries []vault.Entry) error {
 	var todo []vault.Entry
 	for _, e := range entries {
-		if c, ok := l.sessions[e.ID()]; !ok || e.SavedAt.After(c.Entry.SavedAt) {
+		if c, ok := l.sessions[e.ID()]; !ok || c.Format != cacheFormat || e.SavedAt.After(c.Entry.SavedAt) {
 			todo = append(todo, e)
 		}
 	}
@@ -145,7 +150,7 @@ func fetch(ctx context.Context, st store.Store, e vault.Entry) (*cached, error) 
 			entries[i].Text = transcript.Trim(entries[i].Text, maxToolText)
 		}
 	}
-	return &cached{Entry: e, Entries: entries}, nil
+	return &cached{Format: cacheFormat, Entry: e, Entries: entries}, nil
 }
 
 func writeCached(dir string, c *cached) error {

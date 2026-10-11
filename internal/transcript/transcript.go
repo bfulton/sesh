@@ -83,6 +83,86 @@ func WriteNative(data []byte, home, cwd, sessionID string) (string, error) {
 	return path, f.Close()
 }
 
+// Resumable says how much of a transcript `claude --resume` brings back.
+// Claude Code loads a session by following parent links back from its
+// latest message, and a compaction starts a new chain: everything before the
+// last compaction stays in the file but is loaded only as its summary.
+type Resumable struct {
+	Compactions int // compactions in the transcript
+	Prompts     int // prompts typed in the main conversation
+	Loaded      int // of those, prompts on the chain claude --resume loads
+}
+
+// ReadResumable measures a transcript as Resumable describes. Unparseable
+// lines are skipped.
+func ReadResumable(data []byte) Resumable {
+	var res Resumable
+	parent := map[string]string{}
+	prompt := map[string]bool{}
+	carried := map[string][]string{}
+	leaf := ""
+	sc := bufio.NewScanner(bytes.NewReader(data))
+	sc.Buffer(make([]byte, 0, 1<<20), 64<<20)
+	for sc.Scan() {
+		var r record
+		if json.Unmarshal(sc.Bytes(), &r) != nil {
+			continue
+		}
+		if r.Type == "system" && r.Subtype == "compact_boundary" {
+			res.Compactions++
+		}
+		if r.UUID == "" || r.IsSidechain {
+			continue
+		}
+		parent[r.UUID] = r.ParentUUID
+		if r.IsSummary {
+			carried[r.UUID] = r.TurnPrompts
+		}
+		if r.Type == "user" || r.Type == "assistant" {
+			leaf = r.UUID
+		}
+		if r.Type == "user" && !r.IsMeta && !r.IsSummary && isPrompt(r.Message) {
+			prompt[r.UUID] = true
+			res.Prompts++
+		}
+	}
+	seen := map[string]bool{}
+	loaded := map[string]bool{}
+	for id := leaf; id != "" && !seen[id]; id = parent[id] {
+		seen[id] = true
+		for _, p := range append([]string{id}, carried[id]...) {
+			if prompt[p] && !loaded[p] {
+				loaded[p] = true
+				res.Loaded++
+			}
+		}
+	}
+	return res
+}
+
+// isPrompt reports whether a user message is something typed, rather than
+// tool results returned to the model.
+func isPrompt(raw json.RawMessage) bool {
+	var m message
+	if json.Unmarshal(raw, &m) != nil {
+		return false
+	}
+	var s string
+	if json.Unmarshal(m.Content, &s) == nil {
+		return strings.TrimSpace(s) != ""
+	}
+	var blocks []block
+	if json.Unmarshal(m.Content, &blocks) != nil {
+		return false
+	}
+	for _, b := range blocks {
+		if b.Type == "tool_result" {
+			return false
+		}
+	}
+	return len(blocks) > 0
+}
+
 // Find returns the transcript path for a session id under home, searching
 // every project directory.
 func Find(home, sessionID string) (string, error) {
@@ -98,9 +178,16 @@ func Find(home, sessionID string) (string, error) {
 
 // record is the subset of a transcript line that sesh reads.
 type record struct {
-	Type        string          `json:"type"`
-	IsSidechain bool            `json:"isSidechain"`
-	IsMeta      bool            `json:"isMeta"`
+	Type        string `json:"type"`
+	IsSidechain bool   `json:"isSidechain"`
+	IsMeta      bool   `json:"isMeta"`
+	IsSummary   bool   `json:"isCompactSummary"`
+	Subtype     string `json:"subtype"`
+	UUID        string `json:"uuid"`
+	ParentUUID  string `json:"parentUuid"`
+	// On a compaction summary: prompts of the turn it interrupted, which
+	// Claude Code shows after the summary.
+	TurnPrompts []string        `json:"summarizedTurnPromptUuids"`
 	Message     json.RawMessage `json:"message"`
 	Timestamp   string          `json:"timestamp"`
 	Cwd         string          `json:"cwd"`
@@ -220,7 +307,8 @@ type Entry struct {
 
 // Parse extracts the main conversation from a transcript: user and assistant
 // text, tool calls and tool results. Thinking blocks, subagent sidechains,
-// harness-injected meta messages and non-message records are dropped.
+// harness-injected meta messages, compaction summaries (the transcript keeps
+// what they summarize) and non-message records are dropped.
 func Parse(data []byte) ([]Entry, error) {
 	var out []Entry
 	sc := bufio.NewScanner(bytes.NewReader(data))
@@ -235,7 +323,7 @@ func Parse(data []byte) ([]Entry, error) {
 		if err := json.Unmarshal(sc.Bytes(), &r); err != nil {
 			return nil, fmt.Errorf("transcript line %d: %w", line, err)
 		}
-		if (r.Type != "user" && r.Type != "assistant") || r.IsSidechain || r.IsMeta || len(r.Message) == 0 {
+		if (r.Type != "user" && r.Type != "assistant") || r.IsSidechain || r.IsMeta || r.IsSummary || len(r.Message) == 0 {
 			continue
 		}
 		var m message
