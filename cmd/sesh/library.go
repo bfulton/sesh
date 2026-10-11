@@ -97,7 +97,7 @@ func cmdShow(args []string) error {
 	if err != nil {
 		return err
 	}
-	out, err := lib.Render(e.Session, *size)
+	out, err := lib.Render(e.ID(), *size)
 	if err != nil {
 		return err
 	}

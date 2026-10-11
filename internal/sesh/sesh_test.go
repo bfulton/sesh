@@ -191,7 +191,7 @@ func TestSaveWithVault(t *testing.T) {
 		}
 		toks = append(toks, res.Token)
 	}
-	if toks[0] != toks[1] || toks[0] != v.SessionToken("sess-v") {
+	if toks[0] != toks[1] || toks[0] != v.SessionToken(SessionKey("sess-v", tpath)) {
 		t.Fatal("devices sharing a vault saved the session under different tokens")
 	}
 	entries, bad, err := v.List(ctx, st)
@@ -207,5 +207,47 @@ func TestSaveWithVault(t *testing.T) {
 	a, err := Fetch(ctx, st, tok)
 	if err != nil || !strings.Contains(string(a.Transcript), "garnet4242") {
 		t.Fatalf("Fetch: %v", err)
+	}
+}
+
+// Two transcripts with the same session id in different project folders are
+// different sessions; saving them in either order keeps both.
+func TestSameSessionIDInTwoFolders(t *testing.T) {
+	tmp := t.TempDir()
+	st := &store.Dir{Root: filepath.Join(tmp, "store")}
+	key, _ := token.New()
+	v := &vault.Vault{Key: key}
+	ctx := context.Background()
+	mk := func(folder, word string) string {
+		p := filepath.Join(tmp, "projects", folder, "same-id.jsonl")
+		os.MkdirAll(filepath.Dir(p), 0o700)
+		os.WriteFile(p, []byte(`{"type":"user","message":{"role":"user","content":"codeword `+word+`"}}`+"\n"), 0o600)
+		return p
+	}
+	real, nested := mk("-home-user-repo", "real"), mk("-tmp-scratch", "nested")
+	for _, order := range [][]string{{real, nested}, {nested, real}} {
+		for _, p := range order {
+			if _, err := Save(ctx, SaveOptions{Store: st, SessionID: "same-id", TranscriptPath: p, SkipWorktree: true, Vault: v}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		entries, _, err := v.List(ctx, st)
+		if err != nil || len(entries) != 2 {
+			t.Fatalf("entries = %+v, %v; want two sessions", entries, err)
+		}
+		for _, e := range entries {
+			tok, _ := token.Parse(e.Token)
+			a, err := Fetch(ctx, st, tok)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "real"
+			if strings.Contains(e.Key, "scratch") {
+				want = "nested"
+			}
+			if !strings.Contains(string(a.Transcript), "codeword "+want) {
+				t.Errorf("entry %s holds the other session's transcript", e.Key)
+			}
+		}
 	}
 }

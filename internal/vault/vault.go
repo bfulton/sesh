@@ -40,9 +40,9 @@ type Vault struct {
 // without revealing anything about its key.
 func (v Vault) ID() string { return hex.EncodeToString(v.Key.Bytes("sesh vault id v1", 16)) }
 
-// SessionToken returns the share token for a session.
-func (v Vault) SessionToken(sessionID string) token.Token {
-	return v.Key.Derive("sesh session v1:" + sessionID)
+// SessionToken returns the share token for a session, by its key (see Entry.Key).
+func (v Vault) SessionToken(key string) token.Token {
+	return v.Key.Derive("sesh session v1:" + key)
 }
 
 // ServerToken returns the bearer token used with a sesh server.
@@ -53,9 +53,9 @@ func (v Vault) ServerToken() string {
 // CatalogPrefix is the object-name prefix of the vault's catalog.
 func (v Vault) CatalogPrefix() string { return "v1/c/" + v.ID() + "/" }
 
-// EntryName returns the catalog object name for a session.
-func (v Vault) EntryName(sessionID string) string {
-	return v.CatalogPrefix() + hex.EncodeToString(v.Key.Bytes("sesh entry v1:"+sessionID, 16))
+// EntryName returns the catalog object name for a session, by its key.
+func (v Vault) EntryName(key string) string {
+	return v.CatalogPrefix() + hex.EncodeToString(v.Key.Bytes("sesh entry v1:"+key, 16))
 }
 
 // ArchiveName returns the object name of the archive a share token opens.
@@ -63,6 +63,11 @@ func ArchiveName(t token.Token) string { return "v1/s/" + t.ID() }
 
 // Entry describes one saved session in the catalog.
 type Entry struct {
+	// Key identifies the session in the vault. For Claude Code it is the
+	// session id plus the project folder holding the transcript, since the
+	// same id can appear in two folders. Older entries have no key; their
+	// session id is their key.
+	Key      string    `json:"key,omitempty"`
 	Session  string    `json:"session"`
 	Source   string    `json:"source"` // e.g. "claude-code"
 	Title    string    `json:"title,omitempty"`
@@ -80,7 +85,7 @@ type Entry struct {
 
 // Put writes a catalog entry for its session.
 func (v Vault) Put(ctx context.Context, st store.Store, e Entry) error {
-	name := v.EntryName(e.Session)
+	name := v.EntryName(e.ID())
 	plain, err := json.Marshal(e)
 	if err != nil {
 		return err
@@ -92,14 +97,22 @@ func (v Vault) Put(ctx context.Context, st store.Store, e Entry) error {
 	return st.Put(ctx, name, sealed)
 }
 
-// Get reads the catalog entry for a session.
-func (v Vault) Get(ctx context.Context, st store.Store, sessionID string) (*Entry, error) {
-	name := v.EntryName(sessionID)
+// Get reads the catalog entry for a session, by its key.
+func (v Vault) Get(ctx context.Context, st store.Store, key string) (*Entry, error) {
+	name := v.EntryName(key)
 	sealed, err := st.Get(ctx, name)
 	if err != nil {
 		return nil, err
 	}
 	return v.open(name, sealed)
+}
+
+// ID returns the entry's key, or its session id for entries without one.
+func (e Entry) ID() string {
+	if e.Key != "" {
+		return e.Key
+	}
+	return e.Session
 }
 
 // Active is when the session was last active: its last message, or when it

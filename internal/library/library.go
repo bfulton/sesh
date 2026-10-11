@@ -2,6 +2,8 @@ package library
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -83,7 +85,7 @@ func loadCache(dir string) (map[string]*cached, error) {
 			os.Remove(p) // a damaged cache file is just re-downloaded
 			continue
 		}
-		out[c.Entry.Session] = &c
+		out[c.Entry.ID()] = &c
 	}
 	return out, nil
 }
@@ -92,7 +94,7 @@ func loadCache(dir string) (map[string]*cached, error) {
 func (l *Library) pull(ctx context.Context, st store.Store, dir string, entries []vault.Entry) error {
 	var todo []vault.Entry
 	for _, e := range entries {
-		if c, ok := l.sessions[e.Session]; !ok || e.SavedAt.After(c.Entry.SavedAt) {
+		if c, ok := l.sessions[e.ID()]; !ok || e.SavedAt.After(c.Entry.SavedAt) {
 			todo = append(todo, e)
 		}
 	}
@@ -114,11 +116,11 @@ func (l *Library) pull(ctx context.Context, st store.Store, dir string, entries 
 			defer mu.Unlock()
 			if err != nil {
 				if firstErr == nil {
-					firstErr = fmt.Errorf("session %s: %w", e.Session, err)
+					firstErr = fmt.Errorf("session %s: %w", e.ID(), err)
 				}
 				return
 			}
-			l.sessions[e.Session] = c
+			l.sessions[e.ID()] = c
 		}(e)
 	}
 	wg.Wait()
@@ -151,7 +153,8 @@ func writeCached(dir string, c *cached) error {
 	if err != nil {
 		return err
 	}
-	p := filepath.Join(dir, safeName(c.Entry.Session)+".json")
+	sum := sha256.Sum256([]byte(c.Entry.ID()))
+	p := filepath.Join(dir, hex.EncodeToString(sum[:16])+".json")
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
@@ -159,27 +162,16 @@ func writeCached(dir string, c *cached) error {
 	return os.Rename(tmp, p)
 }
 
-// safeName keeps session ids usable as file names.
-func safeName(s string) string {
-	b := []byte(s)
-	for i, c := range b {
-		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
-			b[i] = '_'
-		}
-	}
-	return string(b)
-}
-
 func (l *Library) buildIndex() {
 	var docs []Doc
 	for _, e := range l.Entries {
-		c := l.sessions[e.Session]
+		c := l.sessions[e.ID()]
 		for i, en := range c.Entries {
-			docs = append(docs, Doc{Session: e.Session, Seq: i, Kind: en.Kind, Text: en.Text})
+			docs = append(docs, Doc{Session: e.ID(), Seq: i, Kind: en.Kind, Text: en.Text})
 		}
 		// The title is searchable too, as a pseudo user message.
 		if e.Title != "" {
-			docs = append(docs, Doc{Session: e.Session, Seq: -1, Kind: "user", Text: e.Title})
+			docs = append(docs, Doc{Session: e.ID(), Seq: -1, Kind: "user", Text: e.Title})
 		}
 	}
 	l.index = NewIndex(docs)
@@ -242,8 +234,8 @@ func (l *Library) SearchMessages(query string, limit int) []Hit {
 	return out
 }
 
-// Messages returns up to n messages of a session starting at start, with
-// their positions.
+// Messages returns up to n messages of a session, by entry ID, starting at
+// start, with the session's total message count.
 func (l *Library) Messages(sessionID string, start, n int) ([]transcript.Entry, int, error) {
 	c, ok := l.sessions[sessionID]
 	if !ok {
@@ -258,7 +250,7 @@ func (l *Library) Messages(sessionID string, start, n int) ([]transcript.Entry, 
 // Find returns entries matching an id prefix or title words.
 func (l *Library) Find(q string) []vault.Entry { return vault.Find(l.Entries, q) }
 
-// Conversation returns a session's messages.
+// Conversation returns a session's messages, by entry ID (vault.Entry.ID).
 func (l *Library) Conversation(sessionID string) ([]transcript.Entry, error) {
 	c, ok := l.sessions[sessionID]
 	if !ok {
@@ -267,7 +259,8 @@ func (l *Library) Conversation(sessionID string) ([]transcript.Entry, error) {
 	return c.Entries, nil
 }
 
-// Render returns a session as a quoted record of past turns within budget bytes.
+// Render returns a session, by entry ID, as a quoted record of past turns
+// within budget bytes.
 func (l *Library) Render(sessionID string, budget int) (string, error) {
 	c, ok := l.sessions[sessionID]
 	if !ok {

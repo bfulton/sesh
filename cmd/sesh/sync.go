@@ -2,8 +2,6 @@ package main
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
@@ -102,7 +100,6 @@ func syncOnce(ctx context.Context, quiet bool) (int, error) {
 		return 0, err
 	}
 	state := loadState()
-	ids := sessionIDs(paths)
 	saved := 0
 	var failures []string
 	for _, p := range paths {
@@ -110,7 +107,7 @@ func syncOnce(ctx context.Context, quiet bool) (int, error) {
 		if !ok || state[p] == cur {
 			continue
 		}
-		sid := ids[p]
+		sid := strings.TrimSuffix(filepath.Base(p), ".jsonl")
 		res, err := sesh.Save(ctx, sesh.SaveOptions{
 			Store: st, SessionID: sid, TranscriptPath: p, SkipWorktree: true,
 			Vault: v, Host: hostLabel(),
@@ -136,37 +133,6 @@ func syncOnce(ctx context.Context, quiet bool) (int, error) {
 		return saved, fmt.Errorf("%d sessions failed:\n  %s", len(failures), strings.Join(failures, "\n  "))
 	}
 	return saved, nil
-}
-
-// sessionIDs names each transcript's session by its file name. Claude Code
-// session ids are unique, but the same id can appear in two project
-// folders (a session written to two folders, or a nested session that
-// inherited its parent's id). Then the most recently modified keeps the id
-// and the others get a suffix from their folder, so no save overwrites
-// another session's.
-func sessionIDs(paths []string) map[string]string {
-	byID := map[string][]string{}
-	for _, p := range paths {
-		id := strings.TrimSuffix(filepath.Base(p), ".jsonl")
-		byID[id] = append(byID[id], p)
-	}
-	out := map[string]string{}
-	for id, ps := range byID {
-		sort.Slice(ps, func(i, j int) bool {
-			si, _ := stamp(ps[i])
-			sj, _ := stamp(ps[j])
-			return si.ModTime > sj.ModTime
-		})
-		for i, p := range ps {
-			if i == 0 {
-				out[p] = id
-				continue
-			}
-			sum := sha256.Sum256([]byte(filepath.Base(filepath.Dir(p))))
-			out[p] = id + "-" + hex.EncodeToString(sum[:3])
-		}
-	}
-	return out
 }
 
 func cmdWatch(args []string) error {

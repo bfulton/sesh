@@ -14,8 +14,8 @@ import (
 // Doc is one searchable message: a user or assistant message, a tool call
 // or a tool result.
 type Doc struct {
-	Session string
-	Seq     int // position in the session's conversation
+	Session string // the session's entry ID (vault.Entry.ID)
+	Seq     int    // position in the session's conversation
 	Kind    string
 	Text    string
 }

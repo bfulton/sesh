@@ -280,7 +280,7 @@ func (s *mcpServer) call(name string, raw json.RawMessage) (string, error) {
 		if args.Count <= 0 {
 			args.Count = 8
 		}
-		msgs, total, err := lib.Messages(e.Session, args.Start, min(args.Count, 40))
+		msgs, total, err := lib.Messages(e.ID(), args.Start, min(args.Count, 40))
 		if err != nil {
 			return "", err
 		}
@@ -319,7 +319,7 @@ func (s *mcpServer) call(name string, raw json.RawMessage) (string, error) {
 		if args.MaxChars <= 0 {
 			args.MaxChars = 40000
 		}
-		out, err := lib.Render(e.Session, args.MaxChars)
+		out, err := lib.Render(e.ID(), args.MaxChars)
 		return out + note, err
 	default:
 		return "", fmt.Errorf("unknown tool %q", name)
