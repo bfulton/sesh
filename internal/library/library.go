@@ -247,6 +247,9 @@ func (l *Library) Messages(sessionID string, start, n int) ([]transcript.Entry, 
 	return c.Entries[start:end], total, nil
 }
 
+// Handle returns a short name for e that Find resolves to e alone.
+func (l *Library) Handle(e vault.Entry) string { return vault.Handle(l.Entries, e) }
+
 // Find returns entries matching an id prefix or title words.
 func (l *Library) Find(q string) []vault.Entry { return vault.Find(l.Entries, q) }
 

@@ -37,6 +37,10 @@ pick() {
   if [ -n "${SESH_BIN:-}" ] && [ -x "$SESH_BIN" ]; then echo "$SESH_BIN"; return 0; fi
   if [ -x "$BIN" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$VERSION" ]; then echo "$BIN"; return 0; fi
   if command -v sesh >/dev/null 2>&1 && [ "$(command -v sesh)" != "$0" ]; then command -v sesh; return 0; fi
+  # go install puts binaries in $GOBIN or $GOPATH/bin (~/go/bin), often not on PATH.
+  for d in "${GOBIN:-}" "${GOPATH:-$HOME/go}/bin"; do
+    if [ -n "$d" ] && [ -x "$d/sesh" ]; then echo "$d/sesh"; return 0; fi
+  done
   install && echo "$BIN"
 }
 

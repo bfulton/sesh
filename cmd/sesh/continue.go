@@ -157,7 +157,7 @@ func resolveToken(ctx context.Context, st store.Store, arg string) (token.Token,
 				fmt.Fprintf(&b, "\n  …")
 				break
 			}
-			fmt.Fprintf(&b, "\n  %s  %s", e.Session[:8], e.Title)
+			fmt.Fprintf(&b, "\n  %s  %s", vault.Handle(entries, e), e.Title)
 		}
 		return token.Token{}, errors.New(b.String())
 	}

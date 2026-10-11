@@ -20,6 +20,8 @@ The plugin installs the `sesh` binary on first use (it needs Go 1.24+), or uses 
 go install github.com/bfulton/sesh/cmd/sesh@main
 ```
 
+That puts `sesh` in `~/go/bin`; add it to your PATH, or use the full path below.
+
 ## Set up
 
 ```
@@ -59,7 +61,8 @@ sesh search token alphabet   # search them all
 sesh show <id or title>      # read one
 sesh restore <id or token>   # restore its work here; prints a `claude --resume` command
                              # that continues it with its real turns
-sesh mcp                     # MCP server for any agent: claude mcp add sesh -- sesh mcp
+sesh mcp                     # MCP server for any agent:
+                             #   claude mcp add -s user sesh -- ~/go/bin/sesh mcp
 ```
 
 ## Sharing a session

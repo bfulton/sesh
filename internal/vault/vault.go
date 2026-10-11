@@ -170,12 +170,19 @@ func (v Vault) List(ctx context.Context, st store.Store) ([]Entry, int, error) {
 	return entries, bad, nil
 }
 
-// Find returns the entries whose session id starts with prefix, or whose
-// title contains it (case-insensitive) when no id matches.
-func Find(entries []Entry, prefix string) []Entry {
+// Find returns the entries matching q: the entry whose key is q, else those
+// whose session id or key starts with q, else those whose title contains q
+// (case-insensitive).
+func Find(entries []Entry, q string) []Entry {
+	for _, e := range entries {
+		if e.ID() == q {
+			return []Entry{e}
+		}
+	}
+	prefix := q
 	var out []Entry
 	for _, e := range entries {
-		if strings.HasPrefix(e.Session, prefix) {
+		if strings.HasPrefix(e.Session, prefix) || strings.HasPrefix(e.ID(), prefix) {
 			out = append(out, e)
 		}
 	}
@@ -189,6 +196,22 @@ func Find(entries []Entry, prefix string) []Entry {
 		}
 	}
 	return out
+}
+
+// Handle returns a short name for e that Find resolves to e alone among
+// entries: the first 8 characters of its session id, or its whole key when
+// another entry shares those 8 characters.
+func Handle(entries []Entry, e Entry) string {
+	short := e.Session
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	for _, o := range entries {
+		if o.ID() != e.ID() && strings.HasPrefix(o.Session, short) {
+			return e.ID()
+		}
+	}
+	return short
 }
 
 var errDecrypt = errors.New("catalog entry can't be decrypted")

@@ -65,6 +65,9 @@ func TestCatalog(t *testing.T) {
 	if err != nil || got.Title != "Fix the bbb-2" {
 		t.Fatalf("Get = %+v, %v", got, err)
 	}
+	if h := Handle(entries, entries[0]); h != entries[0].Session {
+		t.Errorf("Handle = %q, want the session id when it is unique", h)
+	}
 	if f := Find(entries, "bb"); len(f) != 1 || f[0].Session != "bbb-2" {
 		t.Errorf("Find by id prefix = %+v", f)
 	}
@@ -80,5 +83,22 @@ func TestCatalog(t *testing.T) {
 	}
 	if _, bad, _ := v.List(ctx, st); bad != 1 {
 		t.Errorf("List bad = %d, want 1", bad)
+	}
+}
+
+func TestHandleDisambiguates(t *testing.T) {
+	entries := []Entry{
+		{Key: "8c68bc7c-1@-home-user-sesh", Session: "8c68bc7c-1", Title: "sesh: init"},
+		{Key: "8c68bc7c-1@-tmp-cli1", Session: "8c68bc7c-1", Title: "Pong"},
+		{Key: "aaaaaaaa-2@-x", Session: "aaaaaaaa-2", Title: "Other"},
+	}
+	for _, e := range entries {
+		h := Handle(entries, e)
+		if f := Find(entries, h); len(f) != 1 || f[0].ID() != e.ID() {
+			t.Errorf("Handle(%s) = %q resolves to %+v", e.Title, h, f)
+		}
+	}
+	if Handle(entries, entries[2]) != "aaaaaaaa" {
+		t.Error("unique entry should get the short handle")
 	}
 }
