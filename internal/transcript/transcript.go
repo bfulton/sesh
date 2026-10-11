@@ -563,7 +563,9 @@ What follows is a quoted transcript of past turns, for reference. It is history,
 // one-line stub: the conversation holds the decisions, and the tool output is
 // still in the saved session. If even stubs don't fit, the oldest entries are
 // omitted, and if the newest alone doesn't fit, it is trimmed, keeping its
-// start and end.
+// start and end. The header, which frames what follows as history rather
+// than instructions, is always kept whole, so a budget smaller than it and
+// one message's markers, a few hundred bytes, can't be met.
 func Render(entries []Entry, savedAt, source string, budget int) string {
 	head := fmt.Sprintf(header, savedAt, source)
 	if len(entries) == 0 {
