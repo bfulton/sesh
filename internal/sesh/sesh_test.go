@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
@@ -191,7 +192,7 @@ func TestSaveWithVault(t *testing.T) {
 		}
 		toks = append(toks, res.Token)
 	}
-	if toks[0] != toks[1] || toks[0] != v.SessionToken(SessionKey("sess-v", tpath)) {
+	if toks[0] != toks[1] || toks[0] != v.SessionToken("sess-v") {
 		t.Fatal("devices sharing a vault saved the session under different tokens")
 	}
 	entries, bad, err := v.List(ctx, st)
@@ -210,45 +211,46 @@ func TestSaveWithVault(t *testing.T) {
 	}
 }
 
-// Two transcripts with the same session id in different project folders are
-// different sessions; saving them in either order keeps both.
-func TestSameSessionIDInTwoFolders(t *testing.T) {
+// Claude Code moves a session's transcript to another project folder when
+// the session changes folder. It is still one session: one catalog entry,
+// one share token, holding the latest save.
+func TestSessionMovesFolder(t *testing.T) {
 	tmp := t.TempDir()
 	st := &store.Dir{Root: filepath.Join(tmp, "store")}
 	key, _ := token.New()
 	v := &vault.Vault{Key: key}
 	ctx := context.Background()
-	mk := func(folder, word string) string {
-		p := filepath.Join(tmp, "projects", folder, "same-id.jsonl")
+	write := func(folder, words string) string {
+		p := filepath.Join(tmp, "projects", folder, "moving-id.jsonl")
 		os.MkdirAll(filepath.Dir(p), 0o700)
-		os.WriteFile(p, []byte(`{"type":"user","message":{"role":"user","content":"codeword `+word+`"}}`+"\n"), 0o600)
+		os.WriteFile(p, []byte(`{"type":"user","cwd":"/`+folder+`","message":{"role":"user","content":"`+words+`"}}`+"\n"), 0o600)
 		return p
 	}
-	real, nested := mk("-home-user-repo", "real"), mk("-tmp-scratch", "nested")
-	for _, order := range [][]string{{real, nested}, {nested, real}} {
-		for _, p := range order {
-			if _, err := Save(ctx, SaveOptions{Store: st, SessionID: "same-id", TranscriptPath: p, SkipWorktree: true, Vault: v}); err != nil {
-				t.Fatal(err)
-			}
-		}
-		entries, _, err := v.List(ctx, st)
-		if err != nil || len(entries) != 2 {
-			t.Fatalf("entries = %+v, %v; want two sessions", entries, err)
-		}
-		for _, e := range entries {
-			tok, _ := token.Parse(e.Token)
-			a, err := Fetch(ctx, st, tok)
-			if err != nil {
-				t.Fatal(err)
-			}
-			want := "real"
-			if strings.Contains(e.Key, "scratch") {
-				want = "nested"
-			}
-			if !strings.Contains(string(a.Transcript), "codeword "+want) {
-				t.Errorf("entry %s holds the other session's transcript", e.Key)
-			}
-		}
+	now := time.Now().UTC()
+	before := write("-repo", "before the move")
+	r1, err := Save(ctx, SaveOptions{Store: st, SessionID: "moving-id", TranscriptPath: before, SkipWorktree: true, Vault: v, Now: now})
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Remove(before)
+	after := write("-repo-worktree", "after the move")
+	r2, err := Save(ctx, SaveOptions{Store: st, SessionID: "moving-id", TranscriptPath: after, SkipWorktree: true, Vault: v, Now: now.Add(time.Minute)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r1.Token != r2.Token {
+		t.Error("the session's share token changed when it moved")
+	}
+	entries, _, err := v.List(ctx, st)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("entries = %+v, %v; want one session", entries, err)
+	}
+	if e := entries[0]; e.Cwd != "/-repo-worktree" || e.Token != r2.Token.String() {
+		t.Errorf("entry = %+v, want the latest save", e)
+	}
+	a, err := Fetch(ctx, st, r2.Token)
+	if err != nil || !strings.Contains(string(a.Transcript), "after the move") {
+		t.Fatalf("Fetch: %v", err)
 	}
 }
 

@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -120,5 +121,27 @@ func TestLibraryPullAndSearch(t *testing.T) {
 	}
 	if h := lib2.Search("railway", 5); len(h) != 1 {
 		t.Fatalf("updated session not pulled: %+v", h)
+	}
+}
+
+// A cache written while sesh keyed sessions by id and folder can hold two
+// files for one session; loading keeps the latest save and removes the rest.
+func TestLoadCacheOnePerSession(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC()
+	for i, name := range []string{"old-folder", "new-folder", "newest"} {
+		c := cached{Format: cacheFormat, Entry: vault.Entry{Session: "s1", Title: name, SavedAt: now.Add(time.Duration(i) * time.Minute)}}
+		data, _ := json.Marshal(c)
+		os.WriteFile(filepath.Join(dir, name+".json"), data, 0o600)
+	}
+	got, err := loadCache(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got["s1"].Entry.Title != "newest" {
+		t.Fatalf("loadCache = %+v", got)
+	}
+	if files, _ := filepath.Glob(filepath.Join(dir, "*.json")); len(files) != 1 {
+		t.Errorf("cache files left: %v", files)
 	}
 }

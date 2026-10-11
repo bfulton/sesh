@@ -68,7 +68,7 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 		if o.SessionID == "" {
 			return nil, errors.New("no session id")
 		}
-		tok = o.Vault.SessionToken(SessionKey(o.SessionID, o.TranscriptPath))
+		tok = o.Vault.SessionToken(o.SessionID)
 	} else if tok, err = sessionToken(o.TokenDir, o.SessionID); err != nil {
 		return nil, err
 	}
@@ -119,7 +119,7 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 	}
 	if o.Vault != nil {
 		e := vault.Entry{
-			Key: SessionKey(o.SessionID, o.TranscriptPath), Session: o.SessionID, Source: a.Manifest.Source, Title: meta.Title,
+			Session: o.SessionID, Source: a.Manifest.Source, Title: meta.Title,
 			Cwd: meta.Cwd, Repo: a.Manifest.Repo, Branch: meta.Branch, Started: meta.Started, Updated: meta.Updated,
 			SavedAt: a.Manifest.SavedAt, Messages: meta.Messages, Bytes: len(data),
 			Token: tok.String(), Host: o.Host,
@@ -255,19 +255,6 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 		}
 	}
 	return res, nil
-}
-
-// SessionKey identifies a session in a vault: its id plus the project folder
-// holding its transcript. Claude Code session ids are unique, but the same
-// id can appear in two project folders (a session written to two folders,
-// or a nested session that inherited its parent's id), and those are
-// different sessions. Every device and hook that saves a transcript derives
-// the same key from it.
-func SessionKey(sessionID, transcriptPath string) string {
-	if transcriptPath == "" {
-		return sessionID
-	}
-	return sessionID + "@" + filepath.Base(filepath.Dir(transcriptPath))
 }
 
 // Fetch downloads and opens the archive a share token names.

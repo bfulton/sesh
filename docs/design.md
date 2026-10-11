@@ -58,6 +58,8 @@ v1/c/<vault id>/<entry id>      one catalog entry, sealed under the catalog key
 
 A **catalog entry** is JSON: session id, source, title, working directory, repo, branch, start, last activity, save time, message count, transcript size, share token and host. Its AES-GCM associated data is its object name, so an entry copied to another name doesn't decrypt. The catalog is written after the archive, so an entry never points at a missing archive.
 
+A session is identified by its session id alone; its folder is metadata on the entry. Claude Code moves a session's transcript to another project folder when the session changes folder (`relocateSessionTranscript`, which stamps a `relocated` record), so the folder isn't stable over a session's life. Listing keeps one entry per session id, the latest save, which also folds in the entries sesh wrote for a while under an id-plus-folder key. The two transcripts that can share an id at once (one mid-move, or a nested `claude` that inherited its parent's id through the environment) resolve to the most recently modified.
+
 An **archive** is a 12-byte random nonce followed by the AES-256-GCM ciphertext of a gzipped tar:
 
 ```
@@ -77,7 +79,7 @@ Stores: a directory (`file:///path`), an S3-compatible bucket (`s3://bucket/pref
 ## Keep
 
 - **Stop hook.** After each turn, the plugin's `Stop` hook saves the live session with its working copy. It hands the save to a detached process and returns at once; saves are serialized with a lock so the newest is written last. Detaching replaced `async: true`, which `claude -p` cuts short.
-- **`sesh sync` / `sesh watch`.** Saves every local transcript whose size or modification time changed since the last save (recorded in `~/.sesh/state.json`). These save the conversation only: a past session's working copy is long gone. If two project folders hold the same session id, the most recently modified keeps it and the others get a suffix from their folder, so no save overwrites another session.
+- **`sesh sync` / `sesh watch`.** Saves every local transcript whose size or modification time changed since the last save (recorded in `~/.sesh/state.json`). These save the conversation only: a past session's working copy is long gone. If two project folders hold the same session id, the most recently modified stands for the session.
 - **`sesh save`.** Saves on demand and shows the share token.
 
 ### Working copy

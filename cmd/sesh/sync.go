@@ -65,11 +65,34 @@ func markSynced(path string) {
 	}
 }
 
-// localTranscripts lists every Claude Code session transcript on this device.
+// localTranscripts lists every Claude Code session transcript on this
+// device, one per session id. A session's transcript can briefly sit in two
+// project folders while Claude Code moves it, or a nested claude can inherit
+// its parent's id; the most recently modified file stands for the session.
 func localTranscripts() ([]string, error) {
 	paths, err := filepath.Glob(filepath.Join(claudeHome(), ".claude", "projects", "*", "*.jsonl"))
-	sort.Strings(paths)
-	return paths, err
+	if err != nil {
+		return nil, err
+	}
+	newest := map[string]string{}
+	mtime := map[string]int64{}
+	for _, p := range paths {
+		s, ok := stamp(p)
+		if !ok {
+			continue
+		}
+		id := strings.TrimSuffix(filepath.Base(p), ".jsonl")
+		if cur, seen := newest[id]; !seen || s.ModTime > mtime[cur] {
+			newest[id] = p
+		}
+		mtime[p] = s.ModTime
+	}
+	out := make([]string, 0, len(newest))
+	for _, p := range newest {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return out, nil
 }
 
 func cmdSync(args []string) error {

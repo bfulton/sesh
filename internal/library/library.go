@@ -80,6 +80,7 @@ func loadCache(dir string) (map[string]*cached, error) {
 		return nil, err
 	}
 	out := map[string]*cached{}
+	file := map[string]string{}
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -90,7 +91,17 @@ func loadCache(dir string) (map[string]*cached, error) {
 			os.Remove(p) // a damaged cache file is just re-downloaded
 			continue
 		}
-		out[c.Entry.ID()] = &c
+		// One session can have two cache files: one written while sesh keyed
+		// sessions by id and folder, one since. The latest save wins.
+		id := c.Entry.ID()
+		if old, ok := out[id]; ok {
+			if !c.Entry.SavedAt.After(old.Entry.SavedAt) {
+				os.Remove(p)
+				continue
+			}
+			os.Remove(file[id])
+		}
+		out[id], file[id] = &c, p
 	}
 	return out, nil
 }

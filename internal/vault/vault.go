@@ -40,9 +40,9 @@ type Vault struct {
 // without revealing anything about its key.
 func (v Vault) ID() string { return hex.EncodeToString(v.Key.Bytes("sesh vault id v1", 16)) }
 
-// SessionToken returns the share token for a session, by its key (see Entry.Key).
-func (v Vault) SessionToken(key string) token.Token {
-	return v.Key.Derive("sesh session v1:" + key)
+// SessionToken returns the share token for a session, by its session id.
+func (v Vault) SessionToken(session string) token.Token {
+	return v.Key.Derive("sesh session v1:" + session)
 }
 
 // ServerToken returns the bearer token used with a sesh server.
@@ -53,9 +53,9 @@ func (v Vault) ServerToken() string {
 // CatalogPrefix is the object-name prefix of the vault's catalog.
 func (v Vault) CatalogPrefix() string { return "v1/c/" + v.ID() + "/" }
 
-// EntryName returns the catalog object name for a session, by its key.
-func (v Vault) EntryName(key string) string {
-	return v.CatalogPrefix() + hex.EncodeToString(v.Key.Bytes("sesh entry v1:"+key, 16))
+// EntryName returns the catalog object name for a session, by its session id.
+func (v Vault) EntryName(session string) string {
+	return v.CatalogPrefix() + hex.EncodeToString(v.Key.Bytes("sesh entry v1:"+session, 16))
 }
 
 // ArchiveName returns the object name of the archive a share token opens.
@@ -63,15 +63,13 @@ func ArchiveName(t token.Token) string { return "v1/s/" + t.ID() }
 
 // Entry describes one saved session in the catalog.
 type Entry struct {
-	// Key identifies the session in the vault. For Claude Code it is the
-	// session id plus the project folder holding the transcript, since the
-	// same id can appear in two folders. Older entries have no key; their
-	// session id is their key.
-	Key      string    `json:"key,omitempty"`
+	// Session is the session id, which identifies the session in the vault.
+	// Where its transcript is kept is not part of its identity: Claude Code
+	// moves a session's transcript when the session changes folder.
 	Session  string    `json:"session"`
 	Source   string    `json:"source"` // e.g. "claude-code"
 	Title    string    `json:"title,omitempty"`
-	Cwd      string    `json:"cwd,omitempty"`
+	Cwd      string    `json:"cwd,omitempty"` // working directory, as of the save
 	Repo     string    `json:"repo,omitempty"`
 	Branch   string    `json:"branch,omitempty"`
 	Started  time.Time `json:"started,omitempty"`
@@ -97,9 +95,9 @@ func (v Vault) Put(ctx context.Context, st store.Store, e Entry) error {
 	return st.Put(ctx, name, sealed)
 }
 
-// Get reads the catalog entry for a session, by its key.
-func (v Vault) Get(ctx context.Context, st store.Store, key string) (*Entry, error) {
-	name := v.EntryName(key)
+// Get reads the catalog entry for a session, by its session id.
+func (v Vault) Get(ctx context.Context, st store.Store, session string) (*Entry, error) {
+	name := v.EntryName(session)
 	sealed, err := st.Get(ctx, name)
 	if err != nil {
 		return nil, err
@@ -107,13 +105,8 @@ func (v Vault) Get(ctx context.Context, st store.Store, key string) (*Entry, err
 	return v.open(name, sealed)
 }
 
-// ID returns the entry's key, or its session id for entries without one.
-func (e Entry) ID() string {
-	if e.Key != "" {
-		return e.Key
-	}
-	return e.Session
-}
+// ID returns what identifies the entry's session: its session id.
+func (e Entry) ID() string { return e.Session }
 
 // Active is when the session was last active: its last message, or when it
 // was saved if that is unknown.
@@ -124,8 +117,10 @@ func (e Entry) Active() time.Time {
 	return e.SavedAt
 }
 
-// List reads the whole catalog, most recently active first. Entries that fail to
-// decrypt are skipped and counted.
+// List reads the whole catalog, most recently active first, one entry per
+// session: where several name the same session, the latest save wins.
+// (Entries written while sesh keyed sessions by id and folder are folded in
+// this way.) Entries that fail to decrypt are skipped and counted.
 func (v Vault) List(ctx context.Context, st store.Store) ([]Entry, int, error) {
 	names, err := st.List(ctx, v.CatalogPrefix())
 	if err != nil {
@@ -166,30 +161,40 @@ func (v Vault) List(ctx context.Context, st store.Store) ([]Entry, int, error) {
 	if firstErr != nil {
 		return nil, 0, firstErr
 	}
+	entries = Dedupe(entries)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Active().After(entries[j].Active()) })
 	return entries, bad, nil
 }
 
-// Find returns the entries matching q: the entry whose key is q, else those
-// whose session id or key starts with q, else those whose title contains q
-// (case-insensitive).
-func Find(entries []Entry, q string) []Entry {
-	for _, e := range entries {
-		if e.ID() == q {
-			return []Entry{e}
-		}
-	}
-	prefix := q
+// Dedupe keeps one entry per session, the latest saved, in no particular
+// order.
+func Dedupe(entries []Entry) []Entry {
+	latest := map[string]int{}
 	var out []Entry
 	for _, e := range entries {
-		if strings.HasPrefix(e.Session, prefix) || strings.HasPrefix(e.ID(), prefix) {
+		if i, ok := latest[e.ID()]; !ok {
+			latest[e.ID()] = len(out)
+			out = append(out, e)
+		} else if e.SavedAt.After(out[i].SavedAt) {
+			out[i] = e
+		}
+	}
+	return out
+}
+
+// Find returns the entries matching q: those whose session id starts with
+// q, else those whose title contains q (case-insensitive).
+func Find(entries []Entry, q string) []Entry {
+	var out []Entry
+	for _, e := range entries {
+		if strings.HasPrefix(e.Session, q) {
 			out = append(out, e)
 		}
 	}
 	if len(out) > 0 {
 		return out
 	}
-	lp := strings.ToLower(prefix)
+	lp := strings.ToLower(q)
 	for _, e := range entries {
 		if strings.Contains(strings.ToLower(e.Title), lp) {
 			out = append(out, e)
@@ -199,8 +204,8 @@ func Find(entries []Entry, q string) []Entry {
 }
 
 // Handle returns a short name for e that Find resolves to e alone among
-// entries: the first 8 characters of its session id, or its whole key when
-// another entry shares those 8 characters.
+// entries: the first 8 characters of its session id, or the whole id when
+// another session shares those 8 characters.
 func Handle(entries []Entry, e Entry) string {
 	short := e.Session
 	if len(short) > 8 {
