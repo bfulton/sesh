@@ -1,6 +1,11 @@
 {
   "name": "sesh",
-  "owner": { "name": "Bright Fulton" },
+  "owner": {
+    "name": "Bright Fulton"
+  },
+  "metadata": {
+    "description": "sesh: keep, continue and search your agent sessions"
+  },
   "plugins": [
     {
       "name": "sesh",
