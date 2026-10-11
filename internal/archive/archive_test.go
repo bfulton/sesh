@@ -33,6 +33,10 @@ func sample() *Archive {
 			"src/app.go": []byte("diff --git a/src/app.go b/src/app.go\n"),
 			"big.bin":    bytes.Repeat([]byte{0, 1, 2, 255}, 1000),
 		},
+		Memory: map[string][]byte{
+			"MEMORY.md":       []byte("- prefers Go\n"),
+			"topics/build.md": []byte("use make\n"),
+		},
 	}
 }
 
@@ -52,6 +56,9 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if want := []string{"big.bin", "src/app.go"}; !reflect.DeepEqual(out.Manifest.Patches, want) {
 		t.Errorf("patches = %v, want %v", out.Manifest.Patches, want)
+	}
+	if !reflect.DeepEqual(out.Memory, in.Memory) {
+		t.Error("memory differs after round trip")
 	}
 	if !reflect.DeepEqual(out.Patches, in.Patches) || !bytes.Equal(out.Transcript, in.Transcript) {
 		t.Error("contents differ after round trip")

@@ -34,6 +34,7 @@ type Manifest struct {
 	Base    string   `json:"base,omitempty"`    // commit the patches apply to
 	Patches []string `json:"patches,omitempty"` // changed paths, each with worktree/patches/<path>.patch
 	Deleted []string `json:"deleted,omitempty"` // paths removed relative to Base
+	Memory  []string `json:"memory,omitempty"`  // files in the session's project memory folder, each at memory/<path>
 }
 
 // Names of the files inside an archive.
@@ -41,6 +42,7 @@ const (
 	ManifestName   = "manifest.json"
 	TranscriptName = "transcript.jsonl"
 	patchDir       = "worktree/patches/"
+	memoryDir      = "memory/"
 )
 
 // PatchName returns the archive file name holding the patch for a repo path.
@@ -51,6 +53,7 @@ type Archive struct {
 	Manifest   Manifest
 	Transcript []byte
 	Patches    map[string][]byte // repo path -> binary patch
+	Memory     map[string][]byte // path within the project memory folder -> content
 }
 
 // Seal packs and encrypts an archive with a 32-byte key.
@@ -106,6 +109,11 @@ func pack(a *Archive) ([]byte, error) {
 		m.Patches = append(m.Patches, p)
 	}
 	sort.Strings(m.Patches)
+	m.Memory = m.Memory[:0:0]
+	for p := range a.Memory {
+		m.Memory = append(m.Memory, p)
+	}
+	sort.Strings(m.Memory)
 	mj, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, err
@@ -129,6 +137,11 @@ func pack(a *Archive) ([]byte, error) {
 	}
 	for _, p := range m.Patches {
 		if err := add(PatchName(p), a.Patches[p]); err != nil {
+			return nil, err
+		}
+	}
+	for _, p := range m.Memory {
+		if err := add(memoryDir+p, a.Memory[p]); err != nil {
 			return nil, err
 		}
 	}
@@ -170,7 +183,7 @@ func unpack(plain []byte) (*Archive, error) {
 	if !ok {
 		return nil, errors.New("archive has no manifest")
 	}
-	a := &Archive{Patches: map[string][]byte{}}
+	a := &Archive{Patches: map[string][]byte{}, Memory: map[string][]byte{}}
 	if err := json.Unmarshal(mj, &a.Manifest); err != nil {
 		return nil, fmt.Errorf("archive manifest: %w", err)
 	}
@@ -184,6 +197,13 @@ func unpack(plain []byte) (*Archive, error) {
 			return nil, fmt.Errorf("archive is missing the patch for %q", p)
 		}
 		a.Patches[p] = data
+	}
+	for _, p := range a.Manifest.Memory {
+		data, ok := files[memoryDir+p]
+		if !ok {
+			return nil, fmt.Errorf("archive is missing memory file %q", p)
+		}
+		a.Memory[p] = data
 	}
 	return a, nil
 }

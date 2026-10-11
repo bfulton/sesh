@@ -73,6 +73,9 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 			res.Turns++
 		}
 	}
+	if a.Memory, err = readMemory(filepath.Join(filepath.Dir(o.TranscriptPath), "memory")); err != nil {
+		return nil, fmt.Errorf("reading memory folder: %w", err)
+	}
 	if c, err := worktree.Take(o.Dir); err != nil {
 		res.Worktree = err.Error()
 	} else {
@@ -191,6 +194,9 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 		if err == nil {
 			res.NativePath, err = transcript.WriteNative(a.Transcript, o.Home, absDir(o.Dir), id)
 		}
+		if err == nil {
+			err = writeMemory(filepath.Join(filepath.Dir(res.NativePath), "memory"), a.Memory)
+		}
 		if err != nil {
 			res.NativeErr = err.Error()
 		} else {
@@ -227,4 +233,69 @@ func absDir(dir string) string {
 		return a
 	}
 	return dir
+}
+
+// maxMemory caps the memory folder carried in a save.
+const maxMemory = 8 << 20
+
+// readMemory reads the regular files under a Claude Code project memory
+// folder, keyed by slash-separated relative path. A missing folder is empty.
+func readMemory(dir string) (map[string][]byte, error) {
+	files := map[string][]byte{}
+	total := 0
+	err := filepath.WalkDir(dir, func(p string, d os.DirEntry, err error) error {
+		if err != nil {
+			if errors.Is(err, os.ErrNotExist) && p == dir {
+				return filepath.SkipDir
+			}
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return nil
+		}
+		data, err := os.ReadFile(p)
+		if err != nil {
+			return err
+		}
+		if total += len(data); total > maxMemory {
+			return fmt.Errorf("memory folder is larger than %d bytes", maxMemory)
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil {
+			return err
+		}
+		files[filepath.ToSlash(rel)] = data
+		return nil
+	})
+	return files, err
+}
+
+// writeMemory adds memory files to a project memory folder. Files already
+// there are kept, never overwritten.
+func writeMemory(dir string, files map[string][]byte) error {
+	for rel, data := range files {
+		clean := filepath.Clean(filepath.FromSlash(rel))
+		if filepath.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, ".."+string(filepath.Separator)) {
+			return fmt.Errorf("unsafe memory path %q", rel)
+		}
+		p := filepath.Join(dir, clean)
+		if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+			return err
+		}
+		f, err := os.OpenFile(p, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+		if errors.Is(err, os.ErrExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if _, err := f.Write(data); err != nil {
+			f.Close()
+			return err
+		}
+		if err := f.Close(); err != nil {
+			return err
+		}
+	}
+	return nil
 }

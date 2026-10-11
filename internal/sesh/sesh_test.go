@@ -48,6 +48,9 @@ func TestSaveRestoreEndToEnd(t *testing.T) {
 
 	tpath := filepath.Join(tmp, "session.jsonl")
 	os.WriteFile(tpath, []byte(transcriptJSONL), 0o600)
+	os.MkdirAll(filepath.Join(tmp, "memory", "topics"), 0o700)
+	os.WriteFile(filepath.Join(tmp, "memory", "MEMORY.md"), []byte("- prefers Go\n"), 0o600)
+	os.WriteFile(filepath.Join(tmp, "memory", "topics", "build.md"), []byte("use make\n"), 0o600)
 	st := &store.Dir{Root: filepath.Join(tmp, "store")}
 	tokDir := filepath.Join(tmp, "tokens")
 	ctx := context.Background()
@@ -113,6 +116,22 @@ func TestSaveRestoreEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(string(native), "garnet4242") || !strings.HasPrefix(nres.NativePath, home) {
 		t.Errorf("native session at %s is wrong:\n%s", nres.NativePath, native)
+	}
+	memDir := filepath.Join(filepath.Dir(nres.NativePath), "memory")
+	for f, want := range map[string]string{"MEMORY.md": "- prefers Go\n", "topics/build.md": "use make\n"} {
+		got, _ := os.ReadFile(filepath.Join(memDir, f))
+		if string(got) != want {
+			t.Errorf("memory %s = %q, want %q", f, got, want)
+		}
+	}
+
+	// A second native restore into the same project keeps edited memory.
+	os.WriteFile(filepath.Join(memDir, "MEMORY.md"), []byte("edited locally\n"), 0o600)
+	if _, err := Restore(ctx, RestoreOptions{Store: st, Token: tok, Dir: dst2, Native: true, Home: home}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(filepath.Join(memDir, "MEMORY.md")); string(got) != "edited locally\n" {
+		t.Errorf("restore overwrote existing memory: %q", got)
 	}
 
 	// A wrong token finds nothing.

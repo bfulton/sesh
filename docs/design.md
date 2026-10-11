@@ -4,6 +4,8 @@ Sesh moves an agent session between sessions, accounts and machines. `sesh save`
 
 Both commands are typed as ordinary prompts. A `UserPromptSubmit` hook intercepts them and stops the turn, so neither costs a model call.
 
+Sesh is for moves where at least one side is a session whose files you can't reach: a hosted cloud session as the source (its container disappears) or the target (its history lives on the provider's server), or a session on another account. Moving a local session between local agents or machines is already covered by other tools (see [Related work](#related-work)).
+
 ## What we verified
 
 All checks ran on 2026-10-10 in Claude Code cloud sessions (CLI 2.1.296).
@@ -53,6 +55,7 @@ One object per session: a 12-byte random nonce followed by the AES-256-GCM ciphe
 manifest.json        # format version, source, session id, repo, branch, base commit, timestamps
 transcript.jsonl     # the source session's native transcript, verbatim
 worktree/patches/<path>.patch   # one binary diff per changed path, against base
+memory/<path>        # the session's Claude Code project memory folder, if it has one
 ```
 
 `manifest.json` also lists deleted paths.
@@ -102,8 +105,12 @@ A local directory store exists for tests and offline use.
 
 ## Related work
 
+None of these restore into a hosted session, carry the working copy, or move sessions through remote storage.
+
+- **[session-migrate](https://github.com/xhluca/session-migrate)** converts sessions among 18 local agents (Claude Code, Codex, Copilot, Cursor, Qwen and others) into each target's native, resumable format, keeping tool calls and results where both formats support them. It deliberately drops signed thinking, since a provider's signature can't be recreated. If sesh adds other agents, it should delegate conversion to session-migrate rather than write its own.
+- **[transplant](https://github.com/compoundingtech/transplant)** moves a Claude Code or Codex session to another directory or machine: `pack` writes a tar of `manifest.json` and the transcript, kept as an opaque blob, plus the project memory folder and `~/.claude.json` project entry; `import` places it. Sesh's native restore follows the same design.
 - **[ctxmv](https://github.com/Ryu0118/ctxmv)** (v0.7.0) moves sessions between local agents (Claude Code, Codex, Cursor, Kimi, Copilot CLI) by writing the target's native session file. It works on one machine only, carries no working copy, and keeps only user and assistant text: tool calls, tool results, thinking and images are dropped. On one real session that kept 96,000 characters and dropped 147 tool calls and 146 results (about 338,000 characters). Its code documents Claude Code's resume requirements, and its parsing library [AgentSessions](https://github.com/Ryu0118/AgentSessions) reads the other agents' formats.
-- **[Unified Agent Session Specification](https://github.github.com/gh-aw/specs/unified-agent-session-specification/)** (GitHub Agentic Workflows, draft v1.7.0) defines neutral session events with native passthrough, for logging and analysis across Claude, Codex, Copilot, Gemini and others. It has no working copy and no resume semantics. It is the likely neutral format if sesh adds other agents; Claude-to-Claude restore keeps the native transcript.
+- **[Unified Agent Session Specification](https://github.github.com/gh-aw/specs/unified-agent-session-specification/)** (GitHub Agentic Workflows, draft v1.7.0) defines neutral session events with native passthrough, for logging and analysis across Claude, Codex, Copilot, Gemini and others. It describes sessions for analysis, not for moving or resuming them, and has no working copy.
 
 ## Open questions
 
