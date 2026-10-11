@@ -31,8 +31,9 @@ Sesh has no releases yet; every change so far is unreleased.
   run.
 - `/sesh status`, `list`, `search`, `save` and `restore` in any Claude Code
   session with the plugin. Claude shows what sesh printed, errors included;
-  after a restore in a cloud session, it says where the session stopped.
-  Arguments reach sesh as data, never through a shell.
+  after a restore in a cloud session, it says where the session stopped, and
+  the whole history joins the session when that turn ends. Arguments reach
+  sesh as data, never through a shell.
 
 ### Changed
 

@@ -24,7 +24,9 @@ Checked on October 10 and 11, 2026, in Claude Code cloud sessions and with the C
 | `stopReason` has no practical size cap | 200,000 characters stored whole; facts at start, middle and end recalled |
 | `decision: "block"` does not reach the model's context | A blocked prompt's text was not recalled later |
 | The app does not display `stopReason` | The restore turn showed nothing in the Claude app |
-| The app does not display a blocked prompt's `reason` or `systemMessage` | A blocked `sesh status` showed nothing in the Claude app, though its full text was recorded |
+| The app displays no hook output | In the iOS app, nothing showed for a blocked `sesh status`, for a `stopReason` or the `systemMessage` beside it, or for a `systemMessage` on a prompt that went through, though each was recorded |
+| A Stop hook's `stopReason` reaches the next turn whole | After a visible reply, a Stop hook appended 100 KB; the next turn recalled words from its start and its end. It is stored as a `hook_stopped_continuation` attachment, which sesh's parser skips |
+| An interactive terminal prints a Stop hook's `stopReason` | The end of an appended history showed under the reply |
 | What a hook prints is kept | A cloud session's event stream stores each hook's stdout (`hook_response`); a block message is also written to the transcript, which sesh archives |
 | An account-level plugin reaches cloud sessions | A cloud session loaded `sesh@synced` from `~/.claude/plugins/synced/`; its `Stop` hook ran every turn, and its MCP server connected once installed |
 | A skill's `!` commands put its arguments in a shell | `/sesh restore abc; touch FILE` created `FILE` in auto mode; in the default mode the permission check aborted the skill |
@@ -76,7 +78,7 @@ Real turns reach only a session started from a session file: a running CLI never
 | --- | --- |
 | A shell | A native session file for the target directory; prints `claude --resume <id>` |
 | `/sesh restore` in a local CLI session | The same: a native session file, and the `claude --resume` command |
-| `/sesh restore` in a hosted session (`CLAUDE_CODE_REMOTE=true`) | 8 KB of rendered history, which the model reads in that turn |
+| `/sesh restore` in a hosted session (`CLAUDE_CODE_REMOTE=true`) | The end of the rendered history in that turn, then the whole of it from the Stop hook |
 | `sesh restore` in a hosted session | The rendered history, printed |
 
 Either way the restored session joins this device's library, even when it came from someone else's share token, so sesh's search tools can read what the rendered history trimmed or left out. That lets the history stay small: 100 KB by default, about 45,000 tokens. It keeps every user and assistant message it can, since that is where decisions are, and shrinks tool calls and results to one-line stubs before leaving any message out.
@@ -107,7 +109,7 @@ The **index** is in-memory BM25 (k1 = 1.2, b = 0.75) over every message, plus ea
 
 Commands are the `/sesh` skill, not prompts a hook intercepts: the app shows nothing a hook prints for a blocked prompt, while a skill's output reaches the user through the model's reply. The skill itself runs nothing. Its arguments reach sesh through a `UserPromptExpansion` hook, as data: a skill's `!` command would put them in a shell, where a pasted "share token" could run commands. `sesh hook` runs only `status`, `list`, `search`, `save` and `restore`, takes everything after the command word as its argument, never as flags, and hands the model what sesh printed, errors included. That costs one model turn per command; for a restore, the turn orients the user. Only the user can run it.
 
-Hook context is capped at about 10,000 characters, so `/sesh restore` in a cloud session hands the model 8 KB of history: the end, where the session stopped. The session is in the library, and the model reads the rest with sesh's search tools when it needs to; asked about an early decision after restoring a 2 MB session this way, it answered with one `search_messages` call.
+Restoring into a cloud session takes two steps, because no single channel both shows and carries enough. Hook context reaches the model whole only up to about 10,000 characters, so the restore turn gets the end of the history, 8 KB, and the model says where the session stopped. A Stop hook's `stopReason` reaches the model whole at any size but shows nothing in the app, so the history waits in `~/.sesh/pending/<session id>` until the Stop hook that ends the turn appends all of it. After restoring a 2 MB session this way, the next turn answered a question about an early decision without tools; anything past the budget is in the library for sesh's search tools. A terminal would print the appended history, but only cloud sessions take this path, and a local `/sesh restore` writes a session for `claude --resume` instead.
 
 Whatever sesh prints inside a session is kept: in the transcript, which sesh itself archives, and, in a cloud session, in the provider's event stream. So inside Claude Code, sesh never prints the vault key.
 

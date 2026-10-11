@@ -32,7 +32,7 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `/sesh list` | Lists your sessions |
 | `/sesh search WORDS` | Shows matching sessions |
 | `/sesh save` | Saves now and shows the share token |
-| `/sesh restore TARGET` | Restores the working copy on a new branch. In a terminal session, prints a `claude --resume` command for the real turns; in a cloud session, loads the end of the conversation into this session, 8 KB, and Claude says where it stopped. Claude reads the rest with sesh's search tools |
+| `/sesh restore TARGET` | Restores the working copy on a new branch. In a terminal session, prints a `claude --resume` command for the real turns; in a cloud session, Claude says where the session stopped from the end of its history, and the whole history (`SESH_BUDGET`, 100 KB by default) joins this session when that turn ends |
 
 `/sesh` alone shows the status. `TARGET` and `WORDS` are everything after the command word.
 

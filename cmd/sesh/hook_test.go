@@ -38,6 +38,28 @@ func skill(t *testing.T, ev hookInput) string {
 	return resp.HookSpecificOutput.AdditionalContext
 }
 
+// stop sends a Stop event and returns the stopReason it hands Claude, if any.
+func stop(t *testing.T, sessionID string) string {
+	t.Helper()
+	t.Setenv("SESH_HOOK_DETACHED", "1") // save in this process, not a detached copy
+	data, _ := json.Marshal(hookInput{Event: "Stop", SessionID: sessionID})
+	var out strings.Builder
+	if err := cmdHook(strings.NewReader(string(data)), &out); err != nil {
+		t.Fatal(err)
+	}
+	if out.Len() == 0 {
+		return ""
+	}
+	var resp struct {
+		Continue   *bool
+		StopReason string
+	}
+	if err := json.Unmarshal([]byte(out.String()), &resp); err != nil || resp.Continue == nil || *resp.Continue {
+		t.Fatalf("bad Stop output %q: %v", out.String(), err)
+	}
+	return resp.StopReason
+}
+
 // /sesh's arguments are data: shell syntax in them runs nothing, and text
 // shaped like a flag is an argument, not a flag. Only its five commands run.
 func TestHookSkill(t *testing.T) {
@@ -85,8 +107,18 @@ func TestHookSkill(t *testing.T) {
 			t.Errorf("%s exists: /sesh arguments had an effect", p)
 		}
 	}
-	if out := sesh("restore abcdef"); !strings.Contains(out, "[sesh] Restored record") || !strings.Contains(out, "Crockford base32.") {
-		t.Errorf("restore in a cloud session: %q, want the history", out)
+	// In a cloud session the restore turn gets the end of the history, and
+	// the Stop hook that ends it appends the whole history, once.
+	if out := sesh("restore abcdef"); !strings.Contains(out, "[sesh] Restored record") || !strings.Contains(out, "Crockford base32.") ||
+		!strings.Contains(out, "When this turn ends") {
+		t.Errorf("restore in a cloud session: %q, want the history's end and what follows", out)
+	}
+	if full := stop(t, "live"); !strings.Contains(full, "[sesh] Restored record") || !strings.Contains(full, "Crockford base32.") ||
+		!strings.Contains(full, "search_messages and read_messages") {
+		t.Errorf("Stop after a restore handed Claude %q, want the whole history", full)
+	}
+	if again := stop(t, "live"); again != "" {
+		t.Errorf("a later Stop handed Claude %q, want nothing", again)
 	}
 	if out := sesh("key"); !strings.Contains(out, "isn't one of them") || strings.Contains(out, key.String()) {
 		t.Errorf("key: %q, want a refusal", out)
@@ -123,13 +155,20 @@ func TestHookSkillFitsHookContext(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	out := skill(t, hookInput{CommandName: "sesh:sesh", CommandArgs: "restore bigbig", Cwd: t.TempDir()})
+	out := skill(t, hookInput{CommandName: "sesh:sesh", CommandArgs: "restore bigbig", Cwd: t.TempDir(), SessionID: "live"})
 	if n := utf8.RuneCountInString(out); n > hookContextLimit {
 		t.Errorf("hook context is %d characters, over %d", n, hookContextLimit)
 	}
-	for _, want := range []string{"[sesh] Restored record", "FINAL-STEP", "search_messages and read_messages"} {
+	for _, want := range []string{"[sesh] Restored record", "FINAL-STEP"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("hook context lacks %q", want)
+		}
+	}
+	// The Stop hook's stopReason, which has no such limit, carries it all.
+	full := stop(t, "live")
+	for _, want := range []string{"question 0 ", "FINAL-STEP", "search_messages and read_messages"} {
+		if !strings.Contains(full, want) {
+			t.Errorf("appended history lacks %q", want)
 		}
 	}
 }

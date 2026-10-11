@@ -200,6 +200,14 @@ type RestoreResult struct {
 	NativePath    string               // its transcript file
 	NativeErr     string               // why it couldn't be written, if Native was asked for
 	Resumable     transcript.Resumable // how much of it claude --resume loads
+
+	entries         []transcript.Entry
+	savedAt, source string
+}
+
+// RenderWithin renders the history again, within budget bytes.
+func (r *RestoreResult) RenderWithin(budget int) string {
+	return transcript.Render(r.entries, r.savedAt, r.source, budget)
 }
 
 // Restore downloads a saved session, restores its working copy into Dir and
@@ -234,7 +242,8 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 			source += " on branch " + m.Branch
 		}
 	}
-	res.Rendered = transcript.Render(entries, m.SavedAt.Format(time.RFC3339), source, o.Budget)
+	res.entries, res.savedAt, res.source = entries, m.SavedAt.Format(time.RFC3339), source
+	res.Rendered = res.RenderWithin(o.Budget)
 
 	if o.Native {
 		id, err := newSessionID()

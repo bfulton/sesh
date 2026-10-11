@@ -29,7 +29,8 @@ type hookInput struct {
 // cmdHook is the entry point for the plugin's Claude Code hooks:
 //
 //	Stop                 saves the session after each turn, detached so the
-//	                     turn ends at once
+//	                     turn ends at once, and hands Claude a restored
+//	                     history waiting for it
 //	UserPromptExpansion  runs a /sesh command and hands Claude its output
 //
 // Every run records what it did in ~/.sesh/hook-status.json.
@@ -43,6 +44,11 @@ func cmdHook(in io.Reader, out io.Writer) error {
 	}
 	switch ev.Event {
 	case "Stop", "SessionEnd":
+		if history, ok := takePending(ev.SessionID); ok && ev.Event == "Stop" {
+			if err := json.NewEncoder(out).Encode(map[string]any{"continue": false, "stopReason": history}); err != nil {
+				return err
+			}
+		}
 	case "UserPromptExpansion":
 		if ev.CommandName != skillName {
 			return nil
@@ -81,8 +87,7 @@ func cmdHook(in io.Reader, out io.Writer) error {
 // hands the model as is. Past about 10,000 the model gets only a short
 // preview and a file path: with Claude Code 2.1.296, 9,516 characters
 // arrived whole and 10,516 didn't. skillHistory is how much of a restored
-// session's history fits beside sesh's summary; sesh's search tools read
-// the rest.
+// session's history fits beside sesh's summary.
 const (
 	hookContextLimit = 9_500
 	skillHistory     = 8_000
@@ -124,8 +129,10 @@ func hookSkill(ev hookInput) (cmd, output string) {
 	case "restore":
 		if rest == "" {
 			err = errors.New("usage: /sesh restore TARGET, a share token, session id or title words")
+		} else if inCloud() {
+			err = hookRestore(&b, ev, rest)
 		} else {
-			err = restoreSession(&b, &b, rest, ev.Cwd, min(budget(), skillHistory), "")
+			err = restoreSession(&b, &b, rest, ev.Cwd, budget(), "")
 		}
 	default:
 		err = fmt.Errorf("/sesh runs status, list, search WORDS, save and restore TARGET; %q isn't one of them", cmd)
@@ -134,6 +141,71 @@ func hookSkill(ev hookInput) (cmd, output string) {
 		fmt.Fprintln(&b, "sesh:", err)
 	}
 	return cmd, b.String()
+}
+
+// hookRestore restores a session into a cloud session in two steps. Hook
+// context reaches the model whole only up to hookContextLimit, while a
+// Stop hook's stopReason does at any size but shows nothing in the Claude
+// app. So the restore turn gets the end of the history, for the model to
+// say where the session stopped, and the Stop hook that ends the turn
+// appends the whole history, for every turn after.
+func hookRestore(w io.Writer, ev hookInput, target string) error {
+	res, readable, err := restoreRun(target, ev.Cwd, budget())
+	if err != nil {
+		return err
+	}
+	full := res.Rendered
+	if readable {
+		full += libraryNote(res)
+	}
+	if err := putPending(ev.SessionID, full); err != nil {
+		return err
+	}
+	fmt.Fprintln(w, restoreSummary(res))
+	fmt.Fprint(w, res.RenderWithin(skillHistory))
+	fmt.Fprintf(w, "\n[sesh] That is the end of the history. When this turn ends, the whole rendered history, %d KB, is added to your context.\n", (len(full)+999)/1000)
+	return nil
+}
+
+// A restored history waits in ~/.sesh/pending/<session id> for the Stop
+// hook that ends the restore turn. Waiting files older than a day belong to
+// sessions that ended first, and are removed.
+func pendingPath(sessionID string) (string, bool) {
+	if sessionID == "" || strings.ContainsAny(sessionID, `/\.`) {
+		return "", false
+	}
+	return filepath.Join(seshHome(), "pending", sessionID), true
+}
+
+func putPending(sessionID, history string) error {
+	p, ok := pendingPath(sessionID)
+	if !ok {
+		return fmt.Errorf("no usable session id %q to restore into", sessionID)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	if old, err := os.ReadDir(filepath.Dir(p)); err == nil {
+		for _, e := range old {
+			if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > 24*time.Hour {
+				os.Remove(filepath.Join(filepath.Dir(p), e.Name()))
+			}
+		}
+	}
+	return os.WriteFile(p, []byte(history), 0o600)
+}
+
+func takePending(sessionID string) (string, bool) {
+	p, ok := pendingPath(sessionID)
+	if !ok {
+		return "", false
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "", false
+	}
+	os.Remove(p)
+	return string(data), true
 }
 
 // hookKeep saves the session after a turn, if a vault and store are set up.

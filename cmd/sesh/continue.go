@@ -210,38 +210,20 @@ func cmdRestore(args []string) error {
 // history, elsewhere the claude --resume command. With out, it also writes
 // the rendered history to that file.
 func restoreSession(w, ew io.Writer, target, dir string, size int, out string) error {
-	st, err := openStore()
+	res, readable, err := restoreRun(target, dir, size)
 	if err != nil {
 		return err
 	}
-	ctx := context.Background()
-	tok, err := resolveToken(ctx, st, target)
-	if err != nil {
-		return err
-	}
-	// Locally the history becomes a native session that claude --resume
-	// continues with its real turns. A cloud session's transcript lives on
-	// the provider's servers, where a native session file would never be
-	// read, so there the history is printed for the model to read instead.
-	cloud := inCloud()
-	res, err := sesh.Restore(ctx, sesh.RestoreOptions{
-		Store: st, Token: tok, Dir: dir, Budget: size, Native: !cloud, Home: claudeHome(),
-	})
-	if err != nil {
-		return err
-	}
-	readable := remember(tok, res)
 	fmt.Fprintln(ew, restoreSummary(res))
 	if out != "" {
 		if err := os.WriteFile(out, []byte(res.Rendered), 0o600); err != nil {
 			return err
 		}
 	}
-	if cloud {
+	if inCloud() {
 		fmt.Fprint(w, res.Rendered)
 		if readable {
-			fmt.Fprintf(w, "\n[sesh] The whole session is in sesh's library as session %s: "+
-				"search_messages and read_messages can read what was trimmed or left out above.\n", res.Manifest.Session)
+			fmt.Fprint(w, libraryNote(res))
 		}
 		return nil
 	}
@@ -250,6 +232,38 @@ func restoreSession(w, ew io.Writer, target, dir string, size int, out string) e
 	}
 	fmt.Fprintf(w, "claude --resume %s\n", res.NativeSession)
 	return nil
+}
+
+// restoreRun restores the session target names into dir, rendering its
+// history within size bytes. It reports whether sesh's search tools can read
+// the whole session.
+func restoreRun(target, dir string, size int) (*sesh.RestoreResult, bool, error) {
+	st, err := openStore()
+	if err != nil {
+		return nil, false, err
+	}
+	ctx := context.Background()
+	tok, err := resolveToken(ctx, st, target)
+	if err != nil {
+		return nil, false, err
+	}
+	// Locally the history becomes a native session that claude --resume
+	// continues with its real turns. A cloud session's transcript lives on
+	// the provider's servers, where a native session file would never be
+	// read, so there the history goes to the model instead.
+	res, err := sesh.Restore(ctx, sesh.RestoreOptions{
+		Store: st, Token: tok, Dir: dir, Budget: size, Native: !inCloud(), Home: claudeHome(),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return res, remember(tok, res), nil
+}
+
+// libraryNote tells the model where to read what a rendered history left out.
+func libraryNote(res *sesh.RestoreResult) string {
+	return fmt.Sprintf("\n[sesh] The whole session is in sesh's library as session %s: "+
+		"search_messages and read_messages can read what was trimmed or left out above.\n", res.Manifest.Session)
 }
 
 // remember adds a restored session to this device's library, so sesh's
