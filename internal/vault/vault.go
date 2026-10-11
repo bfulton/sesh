@@ -69,7 +69,7 @@ type Entry struct {
 	Session  string    `json:"session"`
 	Source   string    `json:"source"` // e.g. "claude-code"
 	Title    string    `json:"title,omitempty"`
-	Cwd      string    `json:"cwd,omitempty"` // working directory, as of the save
+	Cwd      string    `json:"cwd,omitempty"` // working directory as of the latest message or move
 	Repo     string    `json:"repo,omitempty"`
 	Branch   string    `json:"branch,omitempty"`
 	Started  time.Time `json:"started,omitempty"`

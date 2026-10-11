@@ -220,20 +220,25 @@ func TestSessionMovesFolder(t *testing.T) {
 	key, _ := token.New()
 	v := &vault.Vault{Key: key}
 	ctx := context.Background()
-	write := func(folder, words string) string {
-		p := filepath.Join(tmp, "projects", folder, "moving-id.jsonl")
-		os.MkdirAll(filepath.Dir(p), 0o700)
-		os.WriteFile(p, []byte(`{"type":"user","cwd":"/`+folder+`","message":{"role":"user","content":"`+words+`"}}`+"\n"), 0o600)
-		return p
-	}
+	// As Claude Code does: the same transcript file moves to the new
+	// project folder, gains a relocated record, and the session goes on.
+	before := filepath.Join(tmp, "projects", "-repo", "moving-id.jsonl")
+	os.MkdirAll(filepath.Dir(before), 0o700)
+	os.WriteFile(before, []byte(`{"type":"user","cwd":"/repo","message":{"role":"user","content":"before the move"}}`+"\n"), 0o600)
 	now := time.Now().UTC()
-	before := write("-repo", "before the move")
 	r1, err := Save(ctx, SaveOptions{Store: st, SessionID: "moving-id", TranscriptPath: before, SkipWorktree: true, Vault: v, Now: now})
 	if err != nil {
 		t.Fatal(err)
 	}
-	os.Remove(before)
-	after := write("-repo-worktree", "after the move")
+	after := filepath.Join(tmp, "projects", "-repo-wt", "moving-id.jsonl")
+	os.MkdirAll(filepath.Dir(after), 0o700)
+	if err := os.Rename(before, after); err != nil {
+		t.Fatal(err)
+	}
+	f, _ := os.OpenFile(after, os.O_APPEND|os.O_WRONLY, 0o600)
+	f.WriteString(`{"type":"relocated","sessionId":"moving-id","relocatedCwd":"/repo/wt"}` + "\n" +
+		`{"type":"user","cwd":"/repo/wt","message":{"role":"user","content":"after the move"}}` + "\n")
+	f.Close()
 	r2, err := Save(ctx, SaveOptions{Store: st, SessionID: "moving-id", TranscriptPath: after, SkipWorktree: true, Vault: v, Now: now.Add(time.Minute)})
 	if err != nil {
 		t.Fatal(err)
@@ -245,7 +250,7 @@ func TestSessionMovesFolder(t *testing.T) {
 	if err != nil || len(entries) != 1 {
 		t.Fatalf("entries = %+v, %v; want one session", entries, err)
 	}
-	if e := entries[0]; e.Cwd != "/-repo-worktree" || e.Token != r2.Token.String() {
+	if e := entries[0]; e.Cwd != "/repo/wt" || e.Token != r2.Token.String() {
 		t.Errorf("entry = %+v, want the latest save", e)
 	}
 	a, err := Fetch(ctx, st, r2.Token)
