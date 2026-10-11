@@ -158,6 +158,10 @@ None of these restore into a hosted session, carry the working copy, keep sessio
 - **[ctxmv](https://github.com/Ryu0118/ctxmv)** (v0.7.0) moves sessions between local agents by writing the target's native session file. It works on one machine only, carries no working copy, and keeps only user and assistant text. On one real session that kept 96,000 characters and dropped 147 tool calls and 146 results (about 338,000 characters).
 - **[Unified Agent Session Specification](https://github.github.com/gh-aw/specs/unified-agent-session-specification/)** (GitHub Agentic Workflows, draft v1.7.0) defines neutral session events for logging and analysis. It has no working copy and no resume semantics.
 
+## Known limitations
+
+- A restored session paired with Remote Control shows only its last 200 messages (after the latest compaction) on phone and web: Claude Code hard-codes that back-fill cap, so the full history stays available through `sesh show` and the transcript, not Remote Control.
+
 ## Open questions
 
 - Whether an account-level plugin install reaches cloud sessions. The docs cover only terminal sessions and Cowork; this session shows a per-account `~/.claude/plugins/synced/` folder, empty because nothing is enabled.
