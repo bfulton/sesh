@@ -117,10 +117,8 @@ func (e Entry) Active() time.Time {
 	return e.SavedAt
 }
 
-// List reads the whole catalog, most recently active first, one entry per
-// session: where several name the same session, the latest save wins.
-// (Entries written while sesh keyed sessions by id and folder are folded in
-// this way.) Entries that fail to decrypt are skipped and counted.
+// List reads the whole catalog, most recently active first. Entries that fail to
+// decrypt are skipped and counted.
 func (v Vault) List(ctx context.Context, st store.Store) ([]Entry, int, error) {
 	names, err := st.List(ctx, v.CatalogPrefix())
 	if err != nil {
@@ -161,25 +159,8 @@ func (v Vault) List(ctx context.Context, st store.Store) ([]Entry, int, error) {
 	if firstErr != nil {
 		return nil, 0, firstErr
 	}
-	entries = Dedupe(entries)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].Active().After(entries[j].Active()) })
 	return entries, bad, nil
-}
-
-// Dedupe keeps one entry per session, the latest saved, in no particular
-// order.
-func Dedupe(entries []Entry) []Entry {
-	latest := map[string]int{}
-	var out []Entry
-	for _, e := range entries {
-		if i, ok := latest[e.ID()]; !ok {
-			latest[e.ID()] = len(out)
-			out = append(out, e)
-		} else if e.SavedAt.After(out[i].SavedAt) {
-			out[i] = e
-		}
-	}
-	return out
 }
 
 // Find returns the entries matching q: those whose session id starts with

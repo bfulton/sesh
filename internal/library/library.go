@@ -80,7 +80,6 @@ func loadCache(dir string) (map[string]*cached, error) {
 		return nil, err
 	}
 	out := map[string]*cached{}
-	file := map[string]string{}
 	for _, p := range paths {
 		data, err := os.ReadFile(p)
 		if err != nil {
@@ -91,26 +90,7 @@ func loadCache(dir string) (map[string]*cached, error) {
 			os.Remove(p) // a damaged cache file is just re-downloaded
 			continue
 		}
-		// One session can have two cache files: one written while sesh keyed
-		// sessions by id and folder, one since. The latest save wins.
-		id := c.Entry.ID()
-		if old, ok := out[id]; ok {
-			if !c.Entry.SavedAt.After(old.Entry.SavedAt) {
-				os.Remove(p)
-				continue
-			}
-			os.Remove(file[id])
-		}
-		out[id], file[id] = &c, p
-	}
-	// Survivors named the old way take the current name, so the next write
-	// replaces them rather than adding a second file.
-	for id, p := range file {
-		if want := cacheName(dir, id); p != want {
-			if err := os.Rename(p, want); err != nil {
-				return nil, err
-			}
-		}
+		out[c.Entry.ID()] = &c
 	}
 	return out, nil
 }
@@ -173,18 +153,13 @@ func fetch(ctx context.Context, st store.Store, e vault.Entry) (*cached, error) 
 	return &cached{Format: cacheFormat, Entry: e, Entries: entries}, nil
 }
 
-// cacheName is the cache file for a session.
-func cacheName(dir, id string) string {
-	sum := sha256.Sum256([]byte(id))
-	return filepath.Join(dir, hex.EncodeToString(sum[:16])+".json")
-}
-
 func writeCached(dir string, c *cached) error {
 	data, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	p := cacheName(dir, c.Entry.ID())
+	sum := sha256.Sum256([]byte(c.Entry.ID()))
+	p := filepath.Join(dir, hex.EncodeToString(sum[:16])+".json")
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err

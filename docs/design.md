@@ -58,7 +58,7 @@ v1/c/<vault id>/<entry id>      one catalog entry, sealed under the catalog key
 
 A **catalog entry** is JSON: session id, source, title, working directory, repo, branch, start, last activity, save time, message count, transcript size, share token and host. Its AES-GCM associated data is its object name, so an entry copied to another name doesn't decrypt. The catalog is written after the archive, so an entry never points at a missing archive.
 
-A session is identified by its session id alone; its folder is metadata on the entry. Claude Code moves a session's transcript to another project folder when the session changes folder (`relocateSessionTranscript`, which stamps a `relocated` record), so the folder isn't stable over a session's life. Listing keeps one entry per session id, the latest save, which also folds in the entries sesh wrote for a while under an id-plus-folder key. The two transcripts that can share an id at once (one mid-move, or a nested `claude` that inherited its parent's id through the environment) resolve to the most recently modified.
+A session is identified by its session id alone; its folder is metadata on the entry. Claude Code moves a session's transcript to another project folder when the session changes folder (`relocateSessionTranscript`, which stamps a `relocated` record), so the folder isn't stable over a session's life. A session's catalog entry is named from its id, so each save replaces the last. The two transcripts that can share an id at once (one mid-move, or a nested `claude` that inherited its parent's id through the environment) resolve to the most recently modified.
 
 An **archive** is a 12-byte random nonce followed by the AES-256-GCM ciphertext of a gzipped tar:
 

@@ -2,7 +2,6 @@ package vault
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -101,46 +100,5 @@ func TestHandleDisambiguates(t *testing.T) {
 	}
 	if Handle(entries, entries[2]) != "aaaaaaaa" {
 		t.Error("unique entry should get the short handle")
-	}
-}
-
-// One entry per session, the latest save winning, including entries written
-// while sesh keyed sessions by id and project folder.
-func TestListDedupesSessions(t *testing.T) {
-	ctx := context.Background()
-	st := &store.Dir{Root: t.TempDir()}
-	v := newVault(t)
-	now := time.Now().UTC().Truncate(time.Second)
-	putAt := func(name string, e Entry) {
-		plain, _ := json.Marshal(e)
-		sealed, err := v.seal(name, plain)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := st.Put(ctx, name, sealed); err != nil {
-			t.Fatal(err)
-		}
-	}
-	putAt(v.EntryName("s1@-old-folder"), Entry{Session: "s1", Title: "before the move", SavedAt: now})
-	putAt(v.EntryName("s1@-new-folder"), Entry{Session: "s1", Title: "after the move", SavedAt: now.Add(time.Minute)})
-	if err := v.Put(ctx, st, Entry{Session: "s2", Title: "other", SavedAt: now}); err != nil {
-		t.Fatal(err)
-	}
-	entries, _, err := v.List(ctx, st)
-	if err != nil || len(entries) != 2 {
-		t.Fatalf("List = %+v, %v; want two sessions", entries, err)
-	}
-	for _, e := range entries {
-		if e.Session == "s1" && e.Title != "after the move" {
-			t.Errorf("s1 = %+v, want the latest save", e)
-		}
-	}
-	// A newer save under the new name wins over both.
-	if err := v.Put(ctx, st, Entry{Session: "s1", Title: "latest", SavedAt: now.Add(time.Hour)}); err != nil {
-		t.Fatal(err)
-	}
-	entries, _, _ = v.List(ctx, st)
-	if len(entries) != 2 || entries[0].Title != "latest" {
-		t.Errorf("after a new save: %+v", entries)
 	}
 }
