@@ -26,6 +26,7 @@ Checked on 2026-10-10/11 in Claude Code cloud sessions and with the real CLI (2.
 | Async hooks don't finish under `claude -p` | The same `Stop` hook saved when synchronous and never ran to completion with `async: true` |
 | Plugin hooks and MCP work with `--plugin-dir` | A turn was kept automatically; typed commands ran with no model call; MCP tools `mcp__plugin_sesh_sesh__*` connected |
 | Agents use the vault well with message-level tools | Asked about a past decision, a fresh session took 18 turns with session-level tools and 7 ($0.10) with `search_messages` + `read_messages`, citing the exact message |
+| It works on a real history | On the author's machine: 14 sessions synced (incremental re-sync 0.03s); "RoomPlan" ranked the session holding that work first; a fresh `claude -p` with only the MCP server answered a design question from messages 3389 and 3424 of a 1,960-message session, in 6 tool calls and about 33s |
 | The server never sees plaintext | After syncing 14 real sessions through `sesh serve`, its files contained none of their text |
 
 ## Keys and tokens
