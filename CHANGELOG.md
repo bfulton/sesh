@@ -24,6 +24,9 @@ Sesh has no releases yet; every change so far is unreleased.
 - CI: formatting, `go vet` and race-detector tests on Linux and macOS, builds
   for Linux, macOS and Windows, and `shellcheck` on the plugin launcher. (#4)
 - Contributing guide, security policy, changelog, and a reference page. (#5)
+- A restored session joins this device's library, so sesh's search tools can
+  read what its rendered history left out, even for a session restored from
+  someone else's share token. The MCP server sees it at once.
 
 ### Changed
 
@@ -32,6 +35,9 @@ Sesh has no releases yet; every change so far is unreleased.
   listed twice, and its old share token stops following new saves. Create a
   new vault. (#4)
 - A session's catalog entry shows its latest folder and branch. (#4)
+- A rendered history keeps the conversation over tool output: tool calls and
+  results shrink to one-line stubs before any message is left out. Its
+  default size is 100 KB, about 45,000 tokens, down from 300 KB.
 
 ### Fixed
 

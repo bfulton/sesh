@@ -1,6 +1,7 @@
 package transcript
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -73,6 +74,29 @@ func TestRenderFitsBudget(t *testing.T) {
 	// A tight budget omits the oldest entries and says so.
 	if s := Render(entries, "d", "src", 5_000); !strings.Contains(s[:600], "earlier entries omitted to fit]") {
 		t.Error("tight budget did not mark omitted entries")
+	}
+}
+
+// The conversation outlasts tool output: tool calls and results shrink to
+// stubs before any user or assistant message is left out.
+func TestRenderKeepsConversationOverTools(t *testing.T) {
+	var entries []Entry
+	for i := 0; i < 200; i++ {
+		entries = append(entries,
+			Entry{"user", fmt.Sprintf("question %d %s", i, strings.Repeat("q", 50))},
+			Entry{"tool_call", "Bash {\"command\":\"go test ./...\"}\n" + strings.Repeat("c", 3000)},
+			Entry{"tool_result", strings.Repeat("r", 5000)},
+			Entry{"assistant", "answer " + strings.Repeat("a", 50)})
+	}
+	s := Render(entries, "d", "src", 60_000)
+	if len(s) > 60_000 {
+		t.Fatalf("rendered %d bytes", len(s))
+	}
+	if n := strings.Count(s, "--- user\n"); n != 200 || strings.Contains(s, "omitted to fit") {
+		t.Errorf("kept %d of 200 user messages; want all, with tool output cut instead", n)
+	}
+	if !strings.Contains(s, "--- tool call: Bash {\"command\":\"go test ./...\"} …\n") || !strings.Contains(s, "--- tool result\n[… 5000 chars …]\n") {
+		t.Errorf("tool stubs missing:\n%s", s[:800])
 	}
 }
 

@@ -60,7 +60,7 @@ With the plugin installed, these work as prompts in any Claude Code session. Non
 | `SESH_STORE` | Storage URL; overrides `config` |
 | `SESH_KEY` | Vault key; overrides `key` |
 | `SESH_HOME` | Replaces `~/.sesh` |
-| `SESH_BUDGET` | Size of a rendered history, in bytes (default 300000) |
+| `SESH_BUDGET` | Size of a rendered history, in bytes (default 100000) |
 | `SESH_BIN` | The plugin uses this sesh binary |
 | `SESH_VERSION` | The version the plugin installs: a tag, branch or commit (default `main`) |
 | `SESH_S3_PATH_STYLE` | Any value turns on path-style S3 addressing, for stores that need it |

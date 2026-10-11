@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bfulton/sesh/internal/library"
 	"github.com/bfulton/sesh/internal/sesh"
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
@@ -192,6 +193,7 @@ func cmdRestore(args []string) error {
 	if err != nil {
 		return err
 	}
+	remember(tok, res)
 	fmt.Fprintln(os.Stderr, restoreSummary(res))
 	if *out != "" {
 		if err := os.WriteFile(*out, []byte(res.Rendered), 0o600); err != nil {
@@ -203,6 +205,17 @@ func cmdRestore(args []string) error {
 	}
 	fmt.Printf("claude --resume %s\n", res.NativeSession)
 	return nil
+}
+
+// remember adds a restored session to this device's library, so sesh's
+// search tools can read what its rendered history trimmed or left out. It
+// reports whether they can.
+func remember(tok token.Token, res *sesh.RestoreResult) bool {
+	v, err := loadVault()
+	if err != nil || v == nil {
+		return false
+	}
+	return library.Remember(filepath.Join(seshHome(), "cache"), v, tok, res.Archive) == nil
 }
 
 func saveSummary(r *sesh.SaveResult) string {

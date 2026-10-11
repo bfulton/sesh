@@ -122,3 +122,57 @@ func TestLibraryPullAndSearch(t *testing.T) {
 		t.Fatalf("updated session not pulled: %+v", h)
 	}
 }
+
+// A session restored from someone else's share token is in no catalog the
+// library pulls; Remember makes it searchable and readable anyway.
+func TestRemember(t *testing.T) {
+	ctx := context.Background()
+	tmp := t.TempDir()
+	st := &store.Dir{Root: filepath.Join(tmp, "store")}
+	save := func(body string) token.Token {
+		p := filepath.Join(tmp, "theirs.jsonl")
+		os.WriteFile(p, []byte(`{"type":"user","message":{"role":"user","content":"`+body+`"}}
+`), 0o600)
+		res, err := sesh.Save(ctx, sesh.SaveOptions{Store: st, SessionID: "theirs", TranscriptPath: p, SkipWorktree: true, TokenDir: filepath.Join(tmp, "tokens")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return res.Token
+	}
+	key, _ := token.New()
+	mine := &vault.Vault{Key: key}
+	cache := filepath.Join(tmp, "cache")
+	remember := func(tok token.Token) {
+		t.Helper()
+		a, err := sesh.Fetch(ctx, st, tok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := Remember(cache, mine, tok, a); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	tok := save("We picked Crockford base32 for share tokens.")
+	remember(tok)
+	lib, err := Open(ctx, st, mine, cache, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h := lib.SearchMessages("crockford", 5); len(h) != 1 || h[0].Entry.Session != "theirs" || h[0].Entry.Token != tok.String() {
+		t.Fatalf("remembered session not searchable: %+v", h)
+	}
+
+	// A later save replaces it; remembering the older save again doesn't.
+	old, _ := sesh.Fetch(ctx, st, tok)
+	time.Sleep(10 * time.Millisecond)
+	save("We switched to base58.")
+	remember(tok)
+	if err := Remember(cache, mine, tok, old); err != nil {
+		t.Fatal(err)
+	}
+	lib, _ = Open(ctx, nil, mine, cache, false)
+	if len(lib.SearchMessages("base58", 5)) != 1 || len(lib.SearchMessages("crockford", 5)) != 0 {
+		t.Errorf("want the later save cached, not the older one")
+	}
+}
