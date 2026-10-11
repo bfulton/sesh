@@ -17,7 +17,7 @@ In Claude Code:
 The plugin installs the `sesh` binary on first use (it needs Go 1.24+), or uses `sesh` from your PATH. To install the binary yourself:
 
 ```
-go install github.com/bfulton/sesh/cmd/sesh@sesh-v1
+go install github.com/bfulton/sesh/cmd/sesh@main
 ```
 
 ## Set up

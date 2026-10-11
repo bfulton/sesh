@@ -10,7 +10,7 @@
 # earlier, sesh on PATH, or `go install` of the plugin's pinned version.
 set -u
 
-VERSION="${SESH_VERSION:-sesh-v1}"   # module version: a tag, branch or commit
+VERSION="${SESH_VERSION:-main}"   # module version: a tag, branch or commit; installed once per value
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.sesh/plugin}"
 BIN="$DATA/bin/sesh"
 STAMP="$DATA/bin/version"

@@ -125,7 +125,7 @@ A vault's owner is the first bearer to write in it. Bearers are recorded as SHA-
 
 - `hooks/hooks.json`: `UserPromptSubmit` and `Stop` both run `scripts/sesh hook`.
 - `.mcp.json`: the MCP server.
-- `scripts/sesh`: finds sesh (`$SESH_BIN`, a copy it installed, or `PATH`) or installs it with `go install …@sesh-v1`. Prompts that don't start with "sesh" return in about 20 ms without touching the binary; if installation fails, hooks do nothing, and a typed sesh command gets the reason.
+- `scripts/sesh`: finds sesh (`$SESH_BIN`, a copy it installed, or `PATH`) or installs it with `go install …@main` (once per version string; set `SESH_VERSION` to pin a tag or commit). Prompts that don't start with "sesh" return in about 20 ms without touching the binary; if installation fails, hooks do nothing, and a typed sesh command gets the reason.
 
 Typed commands: `sesh save`, `sesh restore <token|id|title>`, `sesh search <words>`, `sesh status`. Every hook run is recorded in `~/.sesh/hook-status.json`.
 
