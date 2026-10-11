@@ -8,9 +8,11 @@ Sesh keeps a private copy of every agent session you have, so you can continue a
 
 Storage only ever holds ciphertext. Plaintext exists only on your devices and in the model context you choose to load it into.
 
-## What we verified
+This page explains why sesh works as it does. Commands, settings and formats are in the [reference](reference.md).
 
-Checked on 2026-10-10/11 in Claude Code cloud sessions and with the real CLI (2.1.296).
+## Verified behavior
+
+Checked on October 10 and 11, 2026, in Claude Code cloud sessions and with the Claude Code CLI 2.1.296.
 
 | Finding | Evidence |
 | --- | --- |
@@ -31,55 +33,22 @@ Checked on 2026-10-10/11 in Claude Code cloud sessions and with the real CLI (2.
 
 ## Keys and tokens
 
-Everything derives from one **vault key** per person: 128 random bits, written as 26 characters of lowercase Crockford base32 (`0-9a-z` without `i l o u`). Letters and digits only, so a phone double-tap selects the whole thing; decoding ignores case and maps `i l`→`1`, `o`→`0`.
+Everything derives from one **vault key** per person ([derivations](reference.md#keys-and-tokens)). It is written in lowercase Crockford base32: letters and digits only, so a phone double-tap selects the whole thing, and none of the characters that are easy to misread.
 
-HKDF-SHA256 over the vault key derives:
+Because share tokens are derived, every device with the vault key saves a session under the same token with no local state. That's what makes keeping cloud sessions work: their containers keep nothing between runs. Without a vault, `sesh save` falls back to a random token kept on the device.
 
-| Output | Info string | Use |
-| --- | --- | --- |
-| Share token for a session | `sesh session v1:<session id>` | Opens that session's archive; given to others to share one session |
-| Vault id (16 bytes, hex) | `sesh vault id v1` | Names the vault's catalog without revealing the key |
-| Catalog key (32 bytes) | `sesh catalog key v1` | AES-256-GCM for catalog entries |
-| Entry id (16 bytes, hex) | `sesh entry v1:<session id>` | Names a session's catalog entry |
-| Server token (32 bytes, hex) | `sesh server access v1` | Bearer token for `sesh serve` |
+## Storage
 
-A share token is itself a token; HKDF over it derives the archive's encryption key (`sesh key v1`) and object id (`sesh id v1`).
-
-Because share tokens are derived, every device with the vault key saves a session under the same token with no local state. That's what makes keeping cloud sessions work: their containers keep nothing between runs. Without a vault, `sesh save` falls back to a random token kept in `~/.sesh/tokens/`.
-
-## Storage layout
-
-Objects have structured names; stores keep them under `sesh/`:
-
-```
-v1/s/<archive id>               one session's archive, sealed under its share token
-v1/c/<vault id>/<entry id>      one catalog entry, sealed under the catalog key
-```
-
-A **catalog entry** is JSON: session id, source, title, working directory, repo, branch, start, last activity, save time, message count, transcript size, share token and host. Its AES-GCM associated data is its object name, so an entry copied to another name doesn't decrypt. The catalog is written after the archive, so an entry never points at a missing archive.
+Storage holds two kinds of object ([layout](reference.md#storage)): one archive per session, sealed under the session's share token, and one catalog entry per session, sealed under a key derived from the vault key. A catalog entry's object name is bound into its encryption, so an entry copied to another name doesn't decrypt. The catalog is written after the archive, so an entry never points at a missing archive.
 
 A session is identified by its session id alone; its folder is metadata on the entry. Claude Code moves a session's transcript to another project folder when the session changes folder (`relocateSessionTranscript`, which stamps a `relocated` record), so the folder isn't stable over a session's life. A session's catalog entry is named from its id, so each save replaces the last. The two transcripts that can share an id at once (one mid-move, or a nested `claude` that inherited its parent's id through the environment) resolve to the most recently modified.
 
-An **archive** is a 12-byte random nonce followed by the AES-256-GCM ciphertext of a gzipped tar:
-
-```
-manifest.json                   format version, source, session id, repo, branch, base commit,
-                                save time, changed and deleted paths, memory files,
-                                the session folder's original path and files
-transcript.jsonl                the native transcript, verbatim
-worktree/patches/<path>.patch   one binary diff per changed path, against base
-memory/<path>                   the session's Claude Code project memory folder, if any
-session/<path>                  the session folder's tool-results/ and subagents/
-```
-
-Claude Code keeps a folder beside each transcript, `<session id>/`. When a tool's output is too large for the context, it is written to `tool-results/` and the transcript says where, by absolute path; subagent transcripts are in `subagents/`. Saves carry those two parts, smallest files first, up to 64 MB. The rest of the folder, such as a cloud session's `ccr-tip.json` event pointer, belongs to the live original and stays behind.
-
-Stores: a directory (`file:///path`), an S3-compatible bucket (`s3://bucket/prefix`, configured through the AWS SDK's environment), or a sesh server (`https://host`).
+Claude Code keeps a folder beside each transcript, `<session id>/`. When a tool's output is too large for the context, it is written to `tool-results/` and the transcript says where, by absolute path; subagent transcripts are in `subagents/`. Saves carry those two parts, smallest files first. The rest of the folder, such as a cloud session's `ccr-tip.json` event pointer, belongs to the live original and stays behind.
 
 ## Keep
 
 - **Stop hook.** After each turn, the plugin's `Stop` hook saves the live session with its working copy. It hands the save to a detached process and returns at once; saves are serialized with a lock so the newest is written last. Detaching replaced `async: true`, which `claude -p` cuts short.
-- **`sesh sync` / `sesh watch`.** Saves every local transcript whose size or modification time changed since the last save (recorded in `~/.sesh/state.json`). These save the conversation only: a past session's working copy is long gone. If two project folders hold the same session id, the most recently modified stands for the session.
+- **`sesh sync` and `sesh watch`.** Save every local transcript whose size or modification time changed since the last save. These save the conversation only: a past session's working copy is long gone. If two project folders hold the same session id, the most recently modified stands for the session.
 - **`sesh save`.** Saves on demand and shows the share token.
 
 ### Working copy
@@ -101,8 +70,6 @@ Real turns reach only a session started from a session file: a running CLI never
 | The hook, in a local CLI session | The rendered history as `stopReason`, so this session continues now, plus a native session file for real turns |
 | The hook, in a hosted session (`CLAUDE_CODE_REMOTE=true`) | The rendered history as `stopReason` only |
 
-`restore` takes a share token, or with a vault, a session id prefix or title words.
-
 The **native file** is the transcript with each record's `sessionId` and `cwd` rewritten; content, uuids and the `parentUuid` chain are unchanged. It goes in `~/.claude/projects/<cwd>/`, where `<cwd>` has every character other than an ASCII letter or digit replaced by `-`. The memory folder is copied alongside, never overwriting existing files. The session folder's files go in the copy's own folder, subagent transcripts rewritten the same way, and references to the original folder are pointed at the copy's, so a resumed agent can reread a large tool output.
 
 A copy is a fork, so it leaves out what binds the original to live state. Claude Code applies these metadata records to whatever session id they carry, and its own fork clears the same state: `bridge-session` (the Remote Control bridge; a copy that kept it took over the original's bridge, which then dropped off with close 4090, issue #2), `worktree-state`, `relocated`, `dev-mods`, `artifact-comment-monitor` and `artifact-autoreact-ledger`, plus `bridge_status` system messages, which link to the original's bridge. A message left out is unlinked from the chain: its children take its parent. Tested with Claude Code 2.1.296: before the fix, a resumed copy wrote the original's bridge id back out under its own id and tried to enter the original's worktree; after it, neither appears.
@@ -113,36 +80,19 @@ The **rendered history** is a quoted record of past turns, framed as history rat
 
 ## Remember
 
-The **library** is the device's decrypted copy of the vault in `~/.sesh/cache/<vault id>/`: one file per session with its catalog entry and conversation (tool text capped at 4 KB). Opening it pulls sessions that are new or saved since they were cached, eight at a time; `-offline` skips the store.
+The **library** is the device's decrypted copy of the vault: one file per session with its catalog entry and conversation (tool text capped at 4 KB). Opening it pulls sessions that are new or saved since they were cached, eight at a time.
 
 The **index** is in-memory BM25 (k1 = 1.2, b = 0.75) over every message, plus each title, built on open. Terms are lowercase letters and digits; identifiers split at case changes and underscores; simple plurals fold. All query terms must match unless no message has them all, in which case messages with the most terms rank. User messages weigh 1.3, assistant 1.0, tool calls 0.6 and tool results 0.5, so conversation outranks tool output. Searches over this machine's sessions take about 40 ms including the pull.
 
-**MCP** (`sesh mcp`, stdio, JSON-RPC 2.0) exposes `search_messages`, `read_messages`, `search_sessions`, `list_sessions` and `get_session`. The server's instructions tell agents to search messages and then read around them. If the store can't be reached, it answers from the device's copy and says so.
+**MCP** (`sesh mcp`, stdio, JSON-RPC 2.0) offers message-level and session-level [tools](reference.md#mcp-tools). Its instructions tell agents to search messages and then read around them, which the verified behavior above shows works best. If the store can't be reached, it answers from the device's copy and says so.
 
 ## Server
 
-`sesh serve` stores objects in a directory and enforces:
-
-| Name | Read | Write | List |
-| --- | --- | --- | --- |
-| `v1/s/<id>` | anyone (the name is unguessable; the content is sealed under a token the server never sees) | the bearer that first wrote it | no |
-| `v1/c/<vault>/…` | the vault's owner only; others get 404 | the vault's owner only | the vault's owner only; others get an empty list |
-
-A vault's owner is the first bearer to write in it. Bearers are recorded as SHA-256 hashes. Objects are capped at 256 MB. Someone who learned a vault id before its owner's first write could claim it and block the owner; vault ids are derived from the key and never published, so this needs a leak.
+`sesh serve` is storage for people without a bucket. It never sees plaintext: archives are readable by name, which is unguessable, and their content is sealed under tokens the server never sees; a vault's catalog is visible only to that vault's owner ([access rules](reference.md#server-access)). Someone who learned a vault id before its owner's first write could claim it and block the owner; vault ids are derived from the key and never published, so this needs a leak.
 
 ## Plugin
 
-`plugin/` is a Claude Code plugin; the repository is also its marketplace.
-
-- `hooks/hooks.json`: `UserPromptSubmit` and `Stop` both run `scripts/sesh hook`.
-- `.mcp.json`: the MCP server.
-- `scripts/sesh`: finds sesh (`$SESH_BIN`, a copy it installed, or `PATH`) or installs it with `go install …@main` (once per version string; set `SESH_VERSION` to pin a tag or commit). Prompts that don't start with "sesh" return in about 20 ms without touching the binary; if installation fails, hooks do nothing, and a typed sesh command gets the reason.
-
-Typed commands: `sesh save`, `sesh restore <token|id|title>`, `sesh search <words>`, `sesh status`. Every hook run is recorded in `~/.sesh/hook-status.json`.
-
-## Configuration
-
-`~/.sesh/` (or `$SESH_HOME`) holds `config` (`store=<url>`), `key`, `state.json`, `hook-status.json`, `cache/` and `tokens/`. `SESH_STORE` and `SESH_KEY` override the files; cloud sessions use them as environment variables. `SESH_BUDGET` sets the rendered-history size.
+`plugin/` is a Claude Code plugin, and the repository is also its marketplace ([files](reference.md#plugin-files)). Hooks run on every prompt and every turn, so the launcher must be fast and must never break a session: prompts that don't start with "sesh" return in about 20 ms without touching the binary, and if sesh can't be installed, hooks do nothing and a typed sesh command explains why.
 
 ## Out of scope
 
@@ -157,6 +107,10 @@ None of these restore into a hosted session, carry the working copy, keep sessio
 - **[transplant](https://github.com/compoundingtech/transplant)** moves a Claude Code or Codex session to another directory or machine: a tar of `manifest.json` and the opaque transcript, plus the project memory folder and `~/.claude.json` project entry. Sesh's native restore follows the same design.
 - **[ctxmv](https://github.com/Ryu0118/ctxmv)** (v0.7.0) moves sessions between local agents by writing the target's native session file. It works on one machine only, carries no working copy, and keeps only user and assistant text. On one real session that kept 96,000 characters and dropped 147 tool calls and 146 results (about 338,000 characters).
 - **[Unified Agent Session Specification](https://github.github.com/gh-aw/specs/unified-agent-session-specification/)** (GitHub Agentic Workflows, draft v1.7.0) defines neutral session events for logging and analysis. It has no working copy and no resume semantics.
+
+## Known limitations
+
+- A restored session paired with Remote Control shows only its last 200 messages (after the latest compaction) on phone and web: Claude Code hard-codes that back-fill cap, so the full history stays available through `sesh show` and the transcript, not Remote Control.
 
 ## Open questions
 

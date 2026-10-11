@@ -40,8 +40,8 @@ Remember:
 Run a server:
   sesh serve [-addr :8080] [-dir path]   storage that only ever sees ciphertext
 
-In Claude Code, the sesh hook also accepts "sesh save" and "sesh restore
-<token>" typed as prompts, and saves each session as it goes.
+In Claude Code, the plugin saves each session as it goes and accepts
+"sesh save", "sesh restore", "sesh search" and "sesh status" typed as prompts.
 
 Storage is a URL: file:///path, s3://bucket/prefix, or https://your-sesh-server.
 Settings come from ~/.sesh/config, overridden by SESH_STORE and SESH_KEY.`

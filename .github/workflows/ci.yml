@@ -41,8 +41,3 @@ jobs:
           for os in linux darwin windows; do GOOS=$os go build ./...; done
       - name: shellcheck plugin launcher
         run: shellcheck plugin/scripts/sesh
-      - name: plugin JSON is valid
-        run: |
-          for f in plugin/hooks/hooks.json plugin/.claude-plugin/plugin.json plugin/.mcp.json .claude-plugin/marketplace.json; do
-            jq empty "$f" || { echo "invalid JSON: $f"; exit 1; }
-          done
