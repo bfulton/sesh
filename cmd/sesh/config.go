@@ -131,9 +131,17 @@ func budget() int {
 	return sesh.DefaultBudget
 }
 
+// inClaude reports whether sesh runs inside a Claude Code session, where
+// anything it prints can end up in the session's transcript.
+func inClaude() bool { return os.Getenv("CLAUDECODE") != "" }
+
+// inCloud reports whether sesh runs in a Claude Code cloud session, whose
+// files don't outlast it.
+func inCloud() bool { return os.Getenv("CLAUDE_CODE_REMOTE") == "true" }
+
 // hostLabel names this device in the catalog.
 func hostLabel() string {
-	if os.Getenv("CLAUDE_CODE_REMOTE") == "true" {
+	if inCloud() {
 		return "claude-cloud"
 	}
 	h, _ := os.Hostname()
