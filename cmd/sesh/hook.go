@@ -51,12 +51,27 @@ var (
 // Every run records what it did in ~/.sesh/hook-status.json.
 func cmdHook(in io.Reader, out io.Writer) error {
 	var ev hookInput
+	if e := os.Getenv("SESH_HOOK_EVENT"); e != "" {
+		in = strings.NewReader(e)
+	}
 	if err := json.NewDecoder(in).Decode(&ev); err != nil {
 		return fmt.Errorf("reading hook event: %w", err)
 	}
 	if ev.Event == "Stop" || ev.Event == "SessionEnd" {
-		result := hookKeep(ev)
-		recordHook(ev, result)
+		// Saving can take a few seconds, so it runs detached: the turn ends
+		// at once, and the save finishes even if Claude Code exits first.
+		// Saves are serialized, so the last one written is the newest.
+		if os.Getenv("SESH_HOOK_DETACHED") == "" {
+			data, _ := json.Marshal(ev)
+			if err := detach([]string{"hook"}, []string{"SESH_HOOK_DETACHED=1", "SESH_HOOK_EVENT=" + string(data)}); err == nil {
+				return nil
+			}
+		}
+		os.MkdirAll(seshHome(), 0o700)
+		if unlock, err := lockFile(filepath.Join(seshHome(), "hook.lock")); err == nil {
+			defer unlock()
+		}
+		recordHook(ev, hookKeep(ev))
 		return nil
 	}
 	var resp hookOutput

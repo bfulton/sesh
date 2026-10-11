@@ -1,0 +1,11 @@
+{
+  "name": "sesh",
+  "owner": { "name": "Bright Fulton" },
+  "plugins": [
+    {
+      "name": "sesh",
+      "source": "./plugin",
+      "description": "Keep every agent session in storage you own; continue any of them anywhere; search across all of them."
+    }
+  ]
+}

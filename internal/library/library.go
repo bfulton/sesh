@@ -222,6 +222,39 @@ func (l *Library) Search(query string, limit int) []Hit {
 	return out
 }
 
+// SearchMessages returns the best-matching individual messages across all
+// sessions, so an agent can jump straight to the relevant part.
+func (l *Library) SearchMessages(query string, limit int) []Hit {
+	var out []Hit
+	for _, m := range l.index.Search(query) {
+		d := l.index.docs[m.Doc]
+		if d.Seq < 0 {
+			continue
+		}
+		out = append(out, Hit{
+			Entry: l.sessions[d.Session].Entry, Seq: d.Seq, Kind: d.Kind,
+			Snippet: Snippet(d.Text, query, 400), Score: m.Score,
+		})
+		if len(out) == limit {
+			break
+		}
+	}
+	return out
+}
+
+// Messages returns up to n messages of a session starting at start, with
+// their positions.
+func (l *Library) Messages(sessionID string, start, n int) ([]transcript.Entry, int, error) {
+	c, ok := l.sessions[sessionID]
+	if !ok {
+		return nil, 0, errors.New("session not in the library")
+	}
+	total := len(c.Entries)
+	start = max(0, min(start, total))
+	end := min(total, start+max(n, 0))
+	return c.Entries[start:end], total, nil
+}
+
 // Find returns entries matching an id prefix or title words.
 func (l *Library) Find(q string) []vault.Entry { return vault.Find(l.Entries, q) }
 
