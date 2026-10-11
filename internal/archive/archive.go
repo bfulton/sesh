@@ -35,6 +35,13 @@ type Manifest struct {
 	Patches []string `json:"patches,omitempty"` // changed paths, each with worktree/patches/<path>.patch
 	Deleted []string `json:"deleted,omitempty"` // paths removed relative to Base
 	Memory  []string `json:"memory,omitempty"`  // files in the session's project memory folder, each at memory/<path>
+
+	// SessionDir is the folder beside the source transcript where Claude Code
+	// keeps the session's large tool outputs and subagent transcripts, which
+	// the transcript refers to by absolute path. Files lists those kept,
+	// each at session/<path>.
+	SessionDir string   `json:"session_dir,omitempty"`
+	Files      []string `json:"files,omitempty"`
 }
 
 // Names of the files inside an archive.
@@ -43,6 +50,7 @@ const (
 	TranscriptName = "transcript.jsonl"
 	patchDir       = "worktree/patches/"
 	memoryDir      = "memory/"
+	filesDir       = "session/"
 )
 
 // PatchName returns the archive file name holding the patch for a repo path.
@@ -54,6 +62,7 @@ type Archive struct {
 	Transcript []byte
 	Patches    map[string][]byte // repo path -> binary patch
 	Memory     map[string][]byte // path within the project memory folder -> content
+	Files      map[string][]byte // path within Manifest.SessionDir -> content
 }
 
 // Seal packs and encrypts an archive with a 32-byte key.
@@ -114,6 +123,11 @@ func pack(a *Archive) ([]byte, error) {
 		m.Memory = append(m.Memory, p)
 	}
 	sort.Strings(m.Memory)
+	m.Files = m.Files[:0:0]
+	for p := range a.Files {
+		m.Files = append(m.Files, p)
+	}
+	sort.Strings(m.Files)
 	mj, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return nil, err
@@ -142,6 +156,11 @@ func pack(a *Archive) ([]byte, error) {
 	}
 	for _, p := range m.Memory {
 		if err := add(memoryDir+p, a.Memory[p]); err != nil {
+			return nil, err
+		}
+	}
+	for _, p := range m.Files {
+		if err := add(filesDir+p, a.Files[p]); err != nil {
 			return nil, err
 		}
 	}
@@ -183,7 +202,7 @@ func unpack(plain []byte) (*Archive, error) {
 	if !ok {
 		return nil, errors.New("archive has no manifest")
 	}
-	a := &Archive{Patches: map[string][]byte{}, Memory: map[string][]byte{}}
+	a := &Archive{Patches: map[string][]byte{}, Memory: map[string][]byte{}, Files: map[string][]byte{}}
 	if err := json.Unmarshal(mj, &a.Manifest); err != nil {
 		return nil, fmt.Errorf("archive manifest: %w", err)
 	}
@@ -204,6 +223,13 @@ func unpack(plain []byte) (*Archive, error) {
 			return nil, fmt.Errorf("archive is missing memory file %q", p)
 		}
 		a.Memory[p] = data
+	}
+	for _, p := range a.Manifest.Files {
+		data, ok := files[filesDir+p]
+		if !ok {
+			return nil, fmt.Errorf("archive is missing session file %q", p)
+		}
+		a.Files[p] = data
 	}
 	return a, nil
 }

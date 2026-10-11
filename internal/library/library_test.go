@@ -102,7 +102,11 @@ func TestLibraryPullAndSearch(t *testing.T) {
 	if err != nil || len(off.Search("phone", 5)) != 1 {
 		t.Fatalf("offline open: %v", err)
 	}
-	r, err := off.Render("s-two", 10000)
+	two := off.Find("s-two")
+	if len(two) != 1 {
+		t.Fatalf("Find(s-two) = %+v", two)
+	}
+	r, err := off.Render(two[0].ID(), 10000)
 	if err != nil || !strings.Contains(r, "Fly") {
 		t.Fatalf("render: %v %q", err, r)
 	}

@@ -50,7 +50,7 @@ func cmdList(args []string) error {
 			fmt.Printf("… %d more\n", len(lib.Entries)-i)
 			break
 		}
-		fmt.Println(formatEntry(e))
+		fmt.Println(formatEntry(lib, e))
 	}
 	if len(lib.Entries) == 0 {
 		fmt.Println("No sessions yet. Run sesh sync, or sesh save in a session.")
@@ -93,11 +93,11 @@ func cmdShow(args []string) error {
 	if err != nil {
 		return err
 	}
-	e, err := pickOne(lib.Find(fs.Arg(0)), fs.Arg(0))
+	e, err := pickOne(lib, fs.Arg(0))
 	if err != nil {
 		return err
 	}
-	out, err := lib.Render(e.Session, *size)
+	out, err := lib.Render(e.ID(), *size)
 	if err != nil {
 		return err
 	}
@@ -105,7 +105,9 @@ func cmdShow(args []string) error {
 	return nil
 }
 
-func pickOne(found []vault.Entry, q string) (vault.Entry, error) {
+// pickOne resolves q to exactly one session, or explains the ambiguity.
+func pickOne(lib *library.Library, q string) (vault.Entry, error) {
+	found := lib.Find(q)
 	switch len(found) {
 	case 0:
 		return vault.Entry{}, fmt.Errorf("no session matches %q", q)
@@ -119,17 +121,17 @@ func pickOne(found []vault.Entry, q string) (vault.Entry, error) {
 			b.WriteString("\n  …")
 			break
 		}
-		fmt.Fprintf(&b, "\n  %s", formatEntry(e))
+		fmt.Fprintf(&b, "\n  %s", formatEntry(lib, e))
 	}
 	return vault.Entry{}, errors.New(b.String())
 }
 
-func formatEntry(e vault.Entry) string {
+func formatEntry(lib *library.Library, e vault.Entry) string {
 	title := e.Title
 	if title == "" {
 		title = "(untitled)"
 	}
-	return fmt.Sprintf("%s  %s  %-48s %4d msgs  %s", shortSession(e.Session), ago(e.Active()), clip(title, 48), e.Messages, place(e))
+	return fmt.Sprintf("%s  %s  %-48s %4d msgs  %s", lib.Handle(e), ago(e.Active()), clip(title, 48), e.Messages, place(e))
 }
 
 func formatHit(lib *library.Library, h library.Hit) string {
@@ -141,7 +143,7 @@ func formatHit(lib *library.Library, h library.Hit) string {
 	if h.More > 0 {
 		more = fmt.Sprintf("  (+%d more)", h.More)
 	}
-	return fmt.Sprintf("%s\n    %s: %s%s", formatEntry(h.Entry), label, h.Snippet, more)
+	return fmt.Sprintf("%s\n    %s: %s%s", formatEntry(lib, h.Entry), label, h.Snippet, more)
 }
 
 // place names where a session ran: its repo, else its folder, plus the host
@@ -157,13 +159,6 @@ func place(e vault.Entry) string {
 		p += " @" + e.Host
 	}
 	return p
-}
-
-func shortSession(id string) string {
-	if len(id) > 8 {
-		return id[:8]
-	}
-	return id
 }
 
 func clip(s string, n int) string {

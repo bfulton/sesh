@@ -20,13 +20,14 @@ func key(t *testing.T) []byte {
 func sample() *Archive {
 	return &Archive{
 		Manifest: Manifest{
-			Source:  "claude-code",
-			Session: "6ffde582-0000-4000-8000-000000000000",
-			SavedAt: time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC),
-			Repo:    "https://github.com/bfulton/sesh",
-			Branch:  "main",
-			Base:    "37af927",
-			Deleted: []string{"old/gone.txt"},
+			Source:     "claude-code",
+			Session:    "6ffde582-0000-4000-8000-000000000000",
+			SavedAt:    time.Date(2026, 10, 10, 12, 0, 0, 0, time.UTC),
+			Repo:       "https://github.com/bfulton/sesh",
+			Branch:     "main",
+			Base:       "37af927",
+			Deleted:    []string{"old/gone.txt"},
+			SessionDir: "/home/u/.claude/projects/-src/s1",
 		},
 		Transcript: []byte(`{"type":"user"}` + "\n"),
 		Patches: map[string][]byte{
@@ -36,6 +37,10 @@ func sample() *Archive {
 		Memory: map[string][]byte{
 			"MEMORY.md":       []byte("- prefers Go\n"),
 			"topics/build.md": []byte("use make\n"),
+		},
+		Files: map[string][]byte{
+			"tool-results/toolu_1.txt": []byte("big output"),
+			"subagents/agent-a1.jsonl": []byte(`{"type":"user"}` + "\n"),
 		},
 	}
 }
@@ -56,6 +61,9 @@ func TestRoundTrip(t *testing.T) {
 	}
 	if want := []string{"big.bin", "src/app.go"}; !reflect.DeepEqual(out.Manifest.Patches, want) {
 		t.Errorf("patches = %v, want %v", out.Manifest.Patches, want)
+	}
+	if !reflect.DeepEqual(out.Files, in.Files) || out.Manifest.SessionDir != in.Manifest.SessionDir {
+		t.Error("session files differ after round trip")
 	}
 	if !reflect.DeepEqual(out.Memory, in.Memory) {
 		t.Error("memory differs after round trip")

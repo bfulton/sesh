@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -47,6 +48,7 @@ type SaveResult struct {
 	Turns    int    // user and assistant messages in the transcript
 	Worktree string // why the working copy was not captured, if it wasn't
 	Pushed   bool   // whether the base commit is on a remote
+	Skipped  int    // session files left out to keep the save under maxSessionFiles
 	Entry    *vault.Entry
 }
 
@@ -66,7 +68,7 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 		if o.SessionID == "" {
 			return nil, errors.New("no session id")
 		}
-		tok = o.Vault.SessionToken(o.SessionID)
+		tok = o.Vault.SessionToken(SessionKey(o.SessionID, o.TranscriptPath))
 	} else if tok, err = sessionToken(o.TokenDir, o.SessionID); err != nil {
 		return nil, err
 	}
@@ -84,6 +86,15 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 	res := &SaveResult{Token: tok, Turns: meta.Messages}
 	if a.Memory, err = readMemory(filepath.Join(filepath.Dir(o.TranscriptPath), "memory")); err != nil {
 		return nil, fmt.Errorf("reading memory folder: %w", err)
+	}
+	side := strings.TrimSuffix(o.TranscriptPath, ".jsonl")
+	if a.Files, res.Skipped, err = readSessionFiles(side); err != nil {
+		return nil, fmt.Errorf("reading session folder: %w", err)
+	}
+	if len(a.Files) > 0 {
+		if a.Manifest.SessionDir, err = filepath.Abs(side); err != nil {
+			return nil, err
+		}
 	}
 	if o.SkipWorktree {
 		res.Worktree = "not captured for this save"
@@ -108,7 +119,7 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 	}
 	if o.Vault != nil {
 		e := vault.Entry{
-			Session: o.SessionID, Source: a.Manifest.Source, Title: meta.Title,
+			Key: SessionKey(o.SessionID, o.TranscriptPath), Session: o.SessionID, Source: a.Manifest.Source, Title: meta.Title,
 			Cwd: meta.Cwd, Repo: a.Manifest.Repo, Branch: meta.Branch, Started: meta.Started, Updated: meta.Updated,
 			SavedAt: a.Manifest.SavedAt, Messages: meta.Messages, Bytes: len(data),
 			Token: tok.String(), Host: o.Host,
@@ -174,9 +185,10 @@ type RestoreResult struct {
 	Worktree string // why the working copy was not restored, if it wasn't
 	Archive  *archive.Archive
 
-	NativeSession string // id of the native session written, if any
-	NativePath    string // its transcript file
-	NativeErr     string // why it couldn't be written, if Native was asked for
+	NativeSession string               // id of the native session written, if any
+	NativePath    string               // its transcript file
+	NativeErr     string               // why it couldn't be written, if Native was asked for
+	Resumable     transcript.Resumable // how much of it claude --resume loads
 }
 
 // Restore downloads a saved session, restores its working copy into Dir and
@@ -216,7 +228,10 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 	if o.Native {
 		id, err := newSessionID()
 		if err == nil {
-			res.NativePath, err = transcript.WriteNative(a.Transcript, o.Home, absDir(o.Dir), id)
+			res.NativePath, err = transcript.WriteNative(a.Transcript, transcript.Native{
+				Home: o.Home, Cwd: absDir(o.Dir), SessionID: id,
+				SideDir: m.SessionDir, Files: a.Files,
+			})
 		}
 		if err == nil {
 			err = writeMemory(filepath.Join(filepath.Dir(res.NativePath), "memory"), a.Memory)
@@ -225,6 +240,7 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 			res.NativeErr = err.Error()
 		} else {
 			res.NativeSession = id
+			res.Resumable = transcript.ReadResumable(a.Transcript)
 		}
 	}
 
@@ -239,6 +255,19 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 		}
 	}
 	return res, nil
+}
+
+// SessionKey identifies a session in a vault: its id plus the project folder
+// holding its transcript. Claude Code session ids are unique, but the same
+// id can appear in two project folders (a session written to two folders,
+// or a nested session that inherited its parent's id), and those are
+// different sessions. Every device and hook that saves a transcript derives
+// the same key from it.
+func SessionKey(sessionID, transcriptPath string) string {
+	if transcriptPath == "" {
+		return sessionID
+	}
+	return sessionID + "@" + filepath.Base(filepath.Dir(transcriptPath))
 }
 
 // Fetch downloads and opens the archive a share token names.
@@ -304,6 +333,67 @@ func readMemory(dir string) (map[string][]byte, error) {
 		return nil
 	})
 	return files, err
+}
+
+// maxSessionFiles caps the session files kept in one save.
+const maxSessionFiles = 64 << 20
+
+// readSessionFiles reads the parts of a session's folder that belong to its
+// history (transcript.SideDirs), smallest first, leaving out files past
+// maxSessionFiles. It returns how many were left out.
+func readSessionFiles(dir string) (map[string][]byte, int, error) {
+	type file struct {
+		rel  string
+		size int64
+	}
+	var found []file
+	for _, sub := range transcript.SideDirs {
+		root := filepath.Join(dir, sub)
+		err := filepath.WalkDir(root, func(p string, d os.DirEntry, err error) error {
+			if err != nil {
+				if errors.Is(err, os.ErrNotExist) && p == root {
+					return filepath.SkipDir
+				}
+				return err
+			}
+			if !d.Type().IsRegular() {
+				return nil
+			}
+			info, err := d.Info()
+			if err != nil {
+				return err
+			}
+			rel, err := filepath.Rel(dir, p)
+			if err != nil {
+				return err
+			}
+			found = append(found, file{filepath.ToSlash(rel), info.Size()})
+			return nil
+		})
+		if err != nil {
+			return nil, 0, err
+		}
+	}
+	sort.Slice(found, func(i, j int) bool { return found[i].size < found[j].size })
+	files := map[string][]byte{}
+	var total int64
+	skipped := 0
+	for _, f := range found {
+		if total+f.size > maxSessionFiles {
+			skipped++
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(dir, filepath.FromSlash(f.rel)))
+		if errors.Is(err, os.ErrNotExist) {
+			continue // removed since the walk
+		}
+		if err != nil {
+			return nil, 0, err
+		}
+		total += int64(len(data))
+		files[f.rel] = data
+	}
+	return files, skipped, nil
 }
 
 // writeMemory adds memory files to a project memory folder. Files already

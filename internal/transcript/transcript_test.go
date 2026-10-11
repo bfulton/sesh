@@ -100,7 +100,7 @@ func TestWriteNative(t *testing.T) {
 {"type":"assistant","sessionId":"old","cwd":"/src","uuid":"a1","parentUuid":"u1","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
 {"type":"last-prompt","sessionId":"old","lastPrompt":"hi","leafUuid":"a1"}
 `
-	path, err := WriteNative([]byte(in), home, "/dst/repo", "new-id")
+	path, err := WriteNative([]byte(in), Native{Home: home, Cwd: "/dst/repo", SessionID: "new-id"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,7 +120,7 @@ func TestWriteNative(t *testing.T) {
 			t.Errorf("lost %s:\n%s", keep, out)
 		}
 	}
-	if _, err := WriteNative([]byte(in), home, "/dst/repo", "new-id"); err == nil {
+	if _, err := WriteNative([]byte(in), Native{Home: home, Cwd: "/dst/repo", SessionID: "new-id"}); err == nil {
 		t.Error("overwrote an existing session file")
 	}
 }
@@ -173,5 +173,91 @@ func TestReadMeta(t *testing.T) {
 	m = ReadMeta([]byte(strings.Split(in, "\n{\"type\":\"ai-title\"")[0]))
 	if m.Title != "Fix the login bug" {
 		t.Errorf("fallback title = %q", m.Title)
+	}
+}
+
+// A compacted session: claude --resume follows parents from the last message
+// back to the compaction boundary, so it loads the prompt after it, plus the
+// prompt of the turn the compaction interrupted, which the summary names.
+func TestReadResumable(t *testing.T) {
+	in := `{"type":"user","uuid":"p1","parentUuid":null,"message":{"role":"user","content":"first prompt"}}
+{"type":"assistant","uuid":"a1","parentUuid":"p1","message":{"role":"assistant","content":[{"type":"tool_use","name":"Bash","input":{}}]}}
+{"type":"user","uuid":"r1","parentUuid":"a1","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}
+{"type":"user","uuid":"p2","parentUuid":"r1","message":{"role":"user","content":[{"type":"text","text":"second prompt"}]}}
+{"type":"user","uuid":"s1","parentUuid":"p2","isSidechain":true,"message":{"role":"user","content":"subagent task"}}
+{"type":"system","subtype":"compact_boundary","uuid":"b1","parentUuid":null,"logicalParentUuid":"p2"}
+{"type":"user","uuid":"c1","parentUuid":"b1","isCompactSummary":true,"summarizedTurnPromptUuids":["p2"],"message":{"role":"user","content":"This session is being continued…"}}
+{"type":"user","uuid":"m1","parentUuid":"c1","isMeta":true,"message":{"role":"user","content":"harness note"}}
+{"type":"user","uuid":"p3","parentUuid":"m1","message":{"role":"user","content":"third prompt"}}
+{"type":"assistant","uuid":"a3","parentUuid":"p3","message":{"role":"assistant","content":[{"type":"text","text":"done"}]}}
+{"type":"last-prompt","lastPrompt":"third prompt","leafUuid":"a3"}
+`
+	got := ReadResumable([]byte(in))
+	if want := (Resumable{Compactions: 1, Prompts: 3, Loaded: 2}); got != want {
+		t.Errorf("ReadResumable = %+v, want %+v", got, want)
+	}
+	entries, err := Parse([]byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Text, "continued") {
+			t.Errorf("compaction summary parsed as a message: %+v", e)
+		}
+	}
+	if got := ReadResumable([]byte(in[:strings.Index(in, `{"type":"system"`)])); got != (Resumable{Prompts: 2, Loaded: 2}) {
+		t.Errorf("uncompacted: %+v", got)
+	}
+}
+
+// Issue #2: a copy must not carry the original's live bindings, and leaving
+// out a message must not break the chain claude --resume follows.
+func TestWriteNativeDropsBindings(t *testing.T) {
+	home := t.TempDir()
+	in := `{"type":"user","sessionId":"old","uuid":"u1","parentUuid":null,"message":{"role":"user","content":"hi"}}
+{"type":"system","subtype":"bridge_status","sessionId":"old","uuid":"b1","parentUuid":"u1","url":"https://claude.ai/code/session_X"}
+{"type":"system","subtype":"bridge_status","sessionId":"old","uuid":"b2","parentUuid":"b1","url":"https://claude.ai/code/session_X"}
+{"type":"assistant","sessionId":"old","uuid":"a1","parentUuid":"b2","message":{"role":"assistant","content":[{"type":"text","text":"hello"}]}}
+{"type":"system","subtype":"compact_boundary","sessionId":"old","uuid":"c1","parentUuid":null,"logicalParentUuid":"b2"}
+{"type":"bridge-session","sessionId":"old","bridgeSessionId":"cse_X","lastSequenceNum":14500}
+{"type":"worktree-state","sessionId":"old","worktreeSession":{"worktreePath":"/orig/wt"}}
+{"type":"relocated","sessionId":"old","relocatedCwd":"/orig"}
+{"type":"dev-mods","sessionId":"old"}
+{"type":"artifact-comment-monitor","sessionId":"old"}
+{"type":"artifact-autoreact-ledger","sessionId":"old"}
+{"type":"custom-title","sessionId":"old","customTitle":"kept"}
+`
+	path, err := WriteNative([]byte(in), Native{Home: home, Cwd: "/dst", SessionID: "new"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _ := os.ReadFile(path)
+	out := string(data)
+	for _, gone := range []string{"cse_X", "session_X", "bridge-session", "worktree-state", "relocated", "dev-mods", "artifact-", `"b1"`, `"b2"`} {
+		if strings.Contains(out, gone) {
+			t.Errorf("%s survived:\n%s", gone, out)
+		}
+	}
+	for _, keep := range []string{`"parentUuid":"u1"`, `"logicalParentUuid":"u1"`, `"customTitle":"kept"`, `"text":"hello"`} {
+		if !strings.Contains(out, keep) {
+			t.Errorf("missing %s:\n%s", keep, out)
+		}
+	}
+	if n := strings.Count(out, "\n"); n != 4 {
+		t.Errorf("wrote %d records, want 4:\n%s", n, out)
+	}
+}
+
+func TestWriteNativeRefusesUnsafeFiles(t *testing.T) {
+	for _, p := range []string{"../escape", "tool-results/../../escape", "/etc/x", "tool-results", "tool-results/", "other/x", `tool-results\..\x`} {
+		home := t.TempDir()
+		_, err := WriteNative([]byte(`{"type":"user"}`+"\n"), Native{Home: home, Cwd: "/dst", SessionID: "new", Files: map[string][]byte{p: []byte("x")}})
+		if err == nil {
+			t.Errorf("accepted session file %q", p)
+		}
+	}
+	home := t.TempDir()
+	if _, err := WriteNative([]byte(`{"type":"user"}`+"\n"), Native{Home: home, Cwd: "/dst", SessionID: "new", Files: map[string][]byte{"tool-results/a/b.txt": []byte("x")}}); err != nil {
+		t.Errorf("refused a nested tool output: %v", err)
 	}
 }
