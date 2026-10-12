@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The Release workflow adds the binaries to a release created on GitHub's
+  release page, instead of failing because the release exists. It can also be
+  run by hand for a tag.
+
 ## [0.3.0] - 2026-10-12
 
 The first release.
