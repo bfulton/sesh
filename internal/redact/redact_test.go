@@ -493,3 +493,19 @@ func TestJSONLLeavesOutLinesThatArentJSON(t *testing.T) {
 		t.Errorf("got %q, want only the whole lines", out)
 	}
 }
+
+func TestJSONLLeavesOutTrailingData(t *testing.T) {
+	// After one whole value, a suffix that starts with } or ] is still not
+	// JSON, and may hold a secret.
+	gh := newFakes().github()
+	whole := `{"text":"a turn"}` + "\n"
+	for _, bad := range []string{`{"text":"a"}} ` + gh, `{"text":"a"}]` + gh, `{"text":"a"} x` + gh} {
+		out, err := newPass(t, nil, time.Time{}).JSONL("t", []byte(whole+bad+"\n"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(out) != whole {
+			t.Errorf("a line with trailing data was kept: %q", out)
+		}
+	}
+}

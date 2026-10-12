@@ -163,7 +163,7 @@ func (p *Pass) jsonLine(line []byte) ([]byte, int, error) {
 	var v any
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.UseNumber()
-	if err := dec.Decode(&v); err != nil || dec.More() || !utf8.Valid(line) {
+	if err := dec.Decode(&v); err != nil || len(bytes.TrimSpace(line[dec.InputOffset():])) > 0 || !utf8.Valid(line) {
 		return nil, 0, errNotJSON
 	}
 	p.scanned += int64(len(line))
