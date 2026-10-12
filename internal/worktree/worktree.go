@@ -36,7 +36,9 @@ func Take(dir string) (*Capture, error) {
 	if c.Branch, err = git(root, nil, "rev-parse", "--abbrev-ref", "HEAD"); err != nil {
 		return nil, fmt.Errorf("repository has no commits: %w", err)
 	}
-	c.Repo, _ = git(root, nil, "remote", "get-url", remoteName(root))
+	if u, err := git(root, nil, "remote", "get-url", remoteName(root)); err == nil {
+		c.Repo = withoutCredentials(u)
+	}
 	if c.Base, c.Pushed, err = base(root); err != nil {
 		return nil, err
 	}
@@ -203,4 +205,25 @@ func gitBytes(dir string, env []string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+// withoutCredentials drops what could carry credentials from a remote URL:
+// user information, such as a token in https://x-access-token:TOKEN@host/r,
+// and the query and fragment. The URL is only shown, and saves are shared.
+// It works on the text, so a password that doesn't parse as a URL goes too.
+// An scp-style remote, git@host:path, has no scheme and holds no password.
+func withoutCredentials(remote string) string {
+	i := strings.Index(remote, "://")
+	if i < 0 {
+		return remote
+	}
+	rest := remote[i+3:]
+	if q := strings.IndexAny(rest, "?#"); q >= 0 {
+		rest = rest[:q]
+	}
+	// The last @ ends the user information, which may itself hold / or @.
+	if at := strings.LastIndexByte(rest, '@'); at >= 0 {
+		rest = rest[at+1:]
+	}
+	return remote[:i+3] + rest
 }

@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -17,14 +19,18 @@ import (
 
 // Settings live in ~/.sesh (or $SESH_HOME):
 //
-//	config   key=value lines; "store" is the storage URL
+//	config   key=value lines: "store" is the storage URL; "redact=off" saves
+//	         secrets as they are
 //	key      the vault key
 //	tokens/  share tokens for sessions saved without a vault
 //	cache/   decrypted sessions and the search index (this device only)
+//	scanned/ per session, hashes of content already scanned for secrets,
+//	         and redacted copies of what held secrets
 //	state    what sync has already saved
 //
-// SESH_STORE and SESH_KEY override the files, which is how cloud sessions
-// are configured: as environment variables of the cloud environment.
+// SESH_STORE, SESH_KEY and SESH_REDACT override the files, which is how
+// cloud sessions are configured: as environment variables of the cloud
+// environment.
 
 func seshHome() string {
 	if d := os.Getenv("SESH_HOME"); d != "" {
@@ -59,8 +65,8 @@ func writeConfig(cfg map[string]string) error {
 		return err
 	}
 	var b strings.Builder
-	b.WriteString("# sesh settings; SESH_STORE and SESH_KEY override these\n")
-	for _, k := range []string{"store"} {
+	b.WriteString("# sesh settings; SESH_STORE and SESH_REDACT override these\n")
+	for _, k := range []string{"store", "redact"} {
 		if v := cfg[k]; v != "" {
 			fmt.Fprintf(&b, "%s=%s\n", k, v)
 		}
@@ -123,6 +129,28 @@ func openStore() (store.Store, error) {
 }
 
 func tokenDir() string { return filepath.Join(seshHome(), "tokens") }
+
+// keepSecrets reports whether saves keep secrets as they are, instead of
+// replacing them with placeholders: SESH_REDACT=off, or redact=off in the
+// config file.
+func keepSecrets() bool {
+	v := os.Getenv("SESH_REDACT")
+	if v == "" {
+		v = readConfig()["redact"]
+	}
+	return v == "off"
+}
+
+// scanCache returns the file remembering what of a session was scanned for
+// secrets. It's named by a hash of the session id, which may hold characters
+// a file name can't, such as : on Windows.
+func scanCache(sessionID string) string {
+	if sessionID == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(sessionID))
+	return filepath.Join(seshHome(), "scanned", hex.EncodeToString(sum[:16]))
+}
 
 func budget() int {
 	if n, err := strconv.Atoi(os.Getenv("SESH_BUDGET")); err == nil && n > 0 {

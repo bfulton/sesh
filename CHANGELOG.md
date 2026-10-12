@@ -8,10 +8,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Added
 
+- Saves replace the secrets they find with placeholders, such as
+  `[REDACTED:github-pat]`, before encrypting: API keys, tokens, private keys
+  and others that gitleaks' default rules recognize, in the transcript, tool
+  outputs, subagent transcripts, memory and the lines the working copy adds.
+  `sesh save` says how many it replaced, and `sesh restore` names the files
+  restored with placeholders. A session's first save scans all of it; later
+  saves scan only what changed. `redact=off` in the config, or
+  `SESH_REDACT=off`, saves secrets as they are.
+- A save no longer records credentials in its repository's remote URL,
+  such as a token in an HTTPS remote or its query.
+
 - The `list_messages` MCP tool lists every message of one kind, by default
   everything the user wrote, with the total count, so an agent can answer
   questions about a whole history, such as how often something happens,
   instead of sampling search results.
+
+### Changed
+
+- Building sesh needs Go 1.24.11 or later, which gitleaks requires.
 
 ### Fixed
 

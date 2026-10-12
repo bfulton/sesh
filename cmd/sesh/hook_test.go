@@ -172,3 +172,30 @@ func TestHookSkillFitsHookContext(t *testing.T) {
 		}
 	}
 }
+
+// /sesh save replaces secrets, says how many, and remembers what it scanned.
+func TestHookSaveRedacts(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("SESH_HOME", filepath.Join(home, ".sesh"))
+	t.Setenv("SESH_REDACT", "")
+	key, _ := token.New()
+	t.Setenv("SESH_KEY", key.String())
+	t.Setenv("SESH_STORE", "file://"+filepath.Join(home, "store"))
+	// A GitHub-token-shaped string made at run time, so none sits in the source.
+	fake := "ghp_" + strings.Repeat("aB3dE5gH7j", 4)[:36]
+	tp := filepath.Join(home, "s.jsonl")
+	line, _ := json.Marshal(map[string]any{"type": "user", "message": map[string]any{"role": "user", "content": "token " + fake}})
+	os.WriteFile(tp, append(line, '\n'), 0o600)
+
+	out := skill(t, hookInput{SessionID: "redact-1", TranscriptPath: tp, Cwd: home, CommandName: skillName, CommandArgs: "save"})
+	if !strings.Contains(out, "1 secret replaced by a placeholder") {
+		t.Errorf("/sesh save printed:\n%s", out)
+	}
+	if strings.Contains(out, fake) {
+		t.Error("the output repeats the secret")
+	}
+	if _, err := os.Stat(scanCache("redact-1")); err != nil {
+		t.Errorf("no scan cache: %v", err)
+	}
+}

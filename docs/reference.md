@@ -8,7 +8,7 @@ Commands, settings and formats. For how to set up and use sesh, see the [README]
 | --- | --- |
 | `sesh init [-store URL] [-key KEY]` | Creates a vault key, or uses `KEY` from another device, and records the storage URL. Inside Claude Code it doesn't print the key; in a cloud session it refuses |
 | `sesh key` | Prints the vault key. Refuses inside Claude Code, whose transcript would keep it |
-| `sesh status` | Shows the vault, the storage URL with any credentials hidden, and the last hook run |
+| `sesh status` | Shows the vault, the storage URL with any credentials hidden, whether redaction is on, and the last hook run |
 | `sesh version` | Prints the release this binary was built for, or `dev` |
 | `sesh save [-transcript FILE] [-session ID] [-dir DIR]` | Saves a session and its working copy, and prints its share token. Inside Claude Code, the current session is the default |
 | `sesh sync [-q]` | Saves every local Claude Code session whose transcript changed since the last sync, conversation only |
@@ -54,11 +54,12 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 
 | File | Holds |
 | --- | --- |
-| `config` | `store=URL` |
+| `config` | `store=URL`, and `redact=off` to save secrets as they are |
 | `key` | The vault key |
 | `state.json` | Each transcript's size and modification time at its last sync |
 | `hook-status.json` | The result of every hook run |
 | `cache/` | This device's decrypted copy of the vault |
+| `scanned/` | For each session, named by a hash of its id, hashes of the content already scanned for secrets, and redacted copies of what held secrets; never a secret |
 | `tokens/` | Share tokens for sessions saved without a vault |
 
 | Environment variable | Effect |
@@ -67,6 +68,7 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `SESH_KEY` | Vault key; overrides `key` |
 | `SESH_HOME` | Replaces `~/.sesh` |
 | `SESH_BUDGET` | Size of a rendered history, in bytes (default 100000) |
+| `SESH_REDACT` | `off` saves secrets as they are; overrides `config` |
 | `SESH_BIN` | The plugin uses this sesh binary |
 | `SESH_VERSION` | The version the plugin installs: a release tag, downloaded, or any tag, branch or commit, built with `go install` (default: the plugin's release) |
 | `SESH_RELEASES` | Where the plugin downloads releases from (default `https://github.com/bfulton/sesh/releases/download`) |
@@ -74,6 +76,24 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | S3 credentials, or any other source the AWS SDK reads |
 | `AWS_REGION` or `AWS_DEFAULT_REGION` | S3 region (default `auto`) |
 | `AWS_ENDPOINT_URL_S3` | S3 endpoint, for stores other than AWS such as R2 or MinIO |
+
+## Secrets
+
+Before a save is encrypted, sesh replaces each secret it finds with a placeholder that names the rule that found it, such as `[REDACTED:github-pat]`. It finds secrets with the 222 default rules of [gitleaks](https://github.com/gitleaks/gitleaks) v8.30.1, which cover cloud, source-control, payment and AI provider keys, private keys, JWTs and generic `key = value` assignments, including inside base64, hex and percent encoding.
+
+| Part of a save | Scanned |
+| --- | --- |
+| Transcript and subagent transcripts | Every JSON string, decoded: object keys, and values after their key. Base64 image and PDF data, which is compressed binary, is skipped. A line that isn't JSON, such as the end of a file still being written, is left out |
+| Large tool outputs and memory files | As text; files that aren't UTF-8 are skipped |
+| Working copy | Lines the patches add. Lines a patch keeps or removes are in the base commit, which a restore needs anyway, and changing them would stop the patch from applying. Binary patches are skipped |
+
+The manifest records how many placeholders each file got. `sesh save` and the hook say how many; `sesh restore` names the working-copy files that hold placeholders, since those files are restored with the placeholders instead of the secrets.
+
+A save also never keeps credentials in the remote URL it records: its user information, such as a token in `https://x-access-token:TOKEN@github.com/…`, and its query, whatever the setting.
+
+Rules can match text that isn't a secret, such as a test fixture with a private key. To save everything as it is, set `redact=off` in `config` or `SESH_REDACT=off`.
+
+The first save of a session scans all of it, at roughly 1 MB a second. `~/.sesh/scanned/` remembers what was clean, and keeps redacted copies of what held secrets, so later saves scan only what changed. The `Stop` hook spends at most 3 minutes scanning, and `/sesh save` 2 minutes; a save out of time uploads nothing, keeps what it scanned, and the next save carries on.
 
 ## Storage
 

@@ -134,6 +134,7 @@ func syncOnce(ctx context.Context, quiet bool) (int, error) {
 		res, err := sesh.Save(ctx, sesh.SaveOptions{
 			Store: st, SessionID: sid, TranscriptPath: p, SkipWorktree: true,
 			Vault: v, Host: hostLabel(),
+			KeepSecrets: keepSecrets(), ScanCache: scanCache(sid),
 		})
 		if err != nil {
 			failures = append(failures, fmt.Sprintf("%s: %v", sid, err))
