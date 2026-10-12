@@ -1,6 +1,6 @@
 {
   "name": "sesh",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Keep every agent session in storage you own; continue any of them anywhere; search across all of them.",
   "author": { "name": "Bright Fulton" },
   "homepage": "https://github.com/bfulton/sesh",

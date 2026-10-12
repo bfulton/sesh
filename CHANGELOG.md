@@ -3,12 +3,21 @@
 All notable changes to sesh are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
-Sesh has no releases yet; every change so far is unreleased.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-12
+
+The first release.
+
 ### Added
 
+- Release binaries for Linux, macOS and Windows on amd64 and arm64, built
+  for each `v*` tag with a `SHA256SUMS` file. The plugin downloads the one
+  for its system and checks it, instead of compiling sesh with Go, which took
+  minutes and timed out a cloud session's MCP server; it falls back to
+  `go install`.
+- `sesh version`.
 - Keep every Claude Code session automatically, through the plugin's `Stop`
   hook, or with `sesh sync` and `sesh watch`. Sessions are encrypted on the
   device into a folder, an S3-compatible bucket, or a sesh server. (#1)
@@ -71,3 +80,6 @@ Sesh has no releases yet; every change so far is unreleased.
 - The plugin no longer runs a `sesh` it finds on `PATH` or in `~/go/bin`,
   which could be another tool of the same name or a different version. It
   runs `SESH_BIN`, or the copy it installed.
+
+[Unreleased]: https://github.com/bfulton/sesh/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/bfulton/sesh/releases/tag/v0.3.0

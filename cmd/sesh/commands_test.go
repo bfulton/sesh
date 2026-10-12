@@ -162,3 +162,14 @@ func TestStatus(t *testing.T) {
 		t.Errorf("status: %v\n%s", err, out)
 	}
 }
+
+func TestVersion(t *testing.T) {
+	if out, _, err := runCmd(t, "version"); err != nil || out != "dev\n" {
+		t.Errorf("version of a local build: %q, %v; want dev", out, err)
+	}
+	defer func(v string) { version = v }(version)
+	version = "v1.2.3"
+	if out, _, err := runCmd(t, "version"); err != nil || out != "v1.2.3\n" {
+		t.Errorf("version stamped at build time: %q, %v", out, err)
+	}
+}

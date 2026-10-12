@@ -39,5 +39,5 @@ jobs:
       - name: build for every target OS
         run: |
           for os in linux darwin windows; do GOOS=$os go build ./...; done
-      - name: shellcheck plugin launcher
-        run: shellcheck plugin/scripts/sesh
+      - name: shellcheck
+        run: shellcheck plugin/scripts/sesh scripts/release-build

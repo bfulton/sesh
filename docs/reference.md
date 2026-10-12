@@ -9,6 +9,7 @@ Commands, settings and formats. For how to set up and use sesh, see the [README]
 | `sesh init [-store URL] [-key KEY]` | Creates a vault key, or uses `KEY` from another device, and records the storage URL. Inside Claude Code it doesn't print the key; in a cloud session it refuses |
 | `sesh key` | Prints the vault key. Refuses inside Claude Code, whose transcript would keep it |
 | `sesh status` | Shows the vault, the storage URL with any credentials hidden, and the last hook run |
+| `sesh version` | Prints the release this binary was built for, or `dev` |
 | `sesh save [-transcript FILE] [-session ID] [-dir DIR]` | Saves a session and its working copy, and prints its share token. Inside Claude Code, the current session is the default |
 | `sesh sync [-q]` | Saves every local Claude Code session whose transcript changed since the last sync, conversation only |
 | `sesh watch [-every 1m]` | Runs `sesh sync` repeatedly |
@@ -66,7 +67,8 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `SESH_HOME` | Replaces `~/.sesh` |
 | `SESH_BUDGET` | Size of a rendered history, in bytes (default 100000) |
 | `SESH_BIN` | The plugin uses this sesh binary |
-| `SESH_VERSION` | The version the plugin installs: a tag, branch or commit (default `main`) |
+| `SESH_VERSION` | The version the plugin installs: a release tag, downloaded, or any tag, branch or commit, built with `go install` (default: the plugin's release) |
+| `SESH_RELEASES` | Where the plugin downloads releases from (default `https://github.com/bfulton/sesh/releases/download`) |
 | `SESH_S3_PATH_STYLE` | Any value turns on path-style S3 addressing, for stores that need it |
 | `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | S3 credentials, or any other source the AWS SDK reads |
 | `AWS_REGION` or `AWS_DEFAULT_REGION` | S3 region (default `auto`) |
@@ -133,5 +135,5 @@ A vault's owner is the first bearer to write in it. Bearers are stored as SHA-25
 | `plugin/hooks/hooks.json` | The `Stop` hook and the `/sesh` command's `UserPromptExpansion` hook, both running `scripts/sesh hook` |
 | `plugin/skills/sesh/SKILL.md` | The `/sesh` command |
 | `plugin/.mcp.json` | The MCP server |
-| `plugin/scripts/sesh` | Runs `$SESH_BIN`, else the copy it installed, else installs one with `go install`, once per `SESH_VERSION`. It never runs a `sesh` from `PATH` |
+| `plugin/scripts/sesh` | Runs `$SESH_BIN`, else the copy it installed, else installs one, once per `SESH_VERSION`: it downloads the release binary for this OS and CPU and checks it against the release's `SHA256SUMS`, and falls back to `go install`. It never runs a `sesh` from `PATH` |
 | `.claude-plugin/marketplace.json` | Makes the repository a plugin marketplace |
