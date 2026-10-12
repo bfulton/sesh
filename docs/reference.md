@@ -59,7 +59,7 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `state.json` | Each transcript's size and modification time at its last sync |
 | `hook-status.json` | The result of every hook run |
 | `cache/` | This device's decrypted copy of the vault |
-| `scanned/` | For each session, hashes of the content already scanned for secrets and found clean; never content |
+| `scanned/` | For each session, named by a hash of its id, hashes of the content already scanned for secrets and found clean; never content |
 | `tokens/` | Share tokens for sessions saved without a vault |
 
 | Environment variable | Effect |
@@ -83,13 +83,13 @@ Before a save is encrypted, sesh replaces each secret it finds with a placeholde
 
 | Part of a save | Scanned |
 | --- | --- |
-| Transcript and subagent transcripts | Every JSON string, decoded: object keys, and values after their key. Base64 image and PDF data, which is compressed binary, is skipped |
+| Transcript and subagent transcripts | Every JSON string, decoded: object keys, and values after their key. Base64 image and PDF data, which is compressed binary, is skipped. A line that isn't JSON, such as the end of a file still being written, is left out |
 | Large tool outputs and memory files | As text; files that aren't UTF-8 are skipped |
 | Working copy | Lines the patches add. Lines a patch keeps or removes are in the base commit, which a restore needs anyway, and changing them would stop the patch from applying. Binary patches are skipped |
 
 The manifest records how many placeholders each file got. `sesh save` and the hook say how many; `sesh restore` names the working-copy files that hold placeholders, since those files are restored with the placeholders instead of the secrets.
 
-A save also never keeps credentials in the remote URL it records, such as a token in `https://x-access-token:TOKEN@github.com/…`, whatever the setting.
+A save also never keeps credentials in the remote URL it records: its user information, such as a token in `https://x-access-token:TOKEN@github.com/…`, and its query, whatever the setting.
 
 Rules can match text that isn't a secret, such as a test fixture with a private key. To save everything as it is, set `redact=off` in `config` or `SESH_REDACT=off`.
 

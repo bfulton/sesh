@@ -17,7 +17,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   saves scan only what changed. `redact=off` in the config, or
   `SESH_REDACT=off`, saves secrets as they are.
 - A save no longer records credentials in its repository's remote URL,
-  such as a token in an HTTPS remote.
+  such as a token in an HTTPS remote or its query.
 
 - The `list_messages` MCP tool lists every message of one kind, by default
   everything the user wrote, with the total count, so an agent can answer

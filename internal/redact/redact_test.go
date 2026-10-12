@@ -477,3 +477,19 @@ func TestBlockEndBounded(t *testing.T) {
 		t.Errorf("blockEnd = %d, want within a chunk after the END marker at %d", b, end)
 	}
 }
+
+func TestJSONLLeavesOutLinesThatArentJSON(t *testing.T) {
+	// A line still being written, with a key after an escaped newline,
+	// which a raw scan misses.
+	aws := newFakes().aws()
+	whole := `{"text":"a turn"}` + "\n"
+	partial := `{"type":"user","toolUseResult":{"stdout":"keys:\n` + aws + `\nmore`
+	p := newPass(t, nil, time.Time{})
+	out, err := p.JSONL("t", []byte(whole+"not json at all\n"+whole+partial))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != whole+whole {
+		t.Errorf("got %q, want only the whole lines", out)
+	}
+}

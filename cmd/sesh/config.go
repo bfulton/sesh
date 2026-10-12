@@ -2,6 +2,8 @@ package main
 
 import (
 	"bufio"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -137,12 +139,14 @@ func keepSecrets() bool {
 }
 
 // scanCache returns the file remembering what of a session was scanned for
-// secrets, or "" for an id that can't name a file.
+// secrets. It's named by a hash of the session id, which may hold characters
+// a file name can't, such as : on Windows.
 func scanCache(sessionID string) string {
-	if sessionID == "" || strings.ContainsAny(sessionID, `/\`) || sessionID == "." || sessionID == ".." {
+	if sessionID == "" {
 		return ""
 	}
-	return filepath.Join(seshHome(), "scanned", sessionID)
+	sum := sha256.Sum256([]byte(sessionID))
+	return filepath.Join(seshHome(), "scanned", hex.EncodeToString(sum[:16]))
 }
 
 func budget() int {

@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -208,14 +207,23 @@ func gitBytes(dir string, env []string, args ...string) ([]byte, error) {
 	return out, nil
 }
 
-// withoutCredentials drops the user information from a remote URL, such as
-// a token in https://x-access-token:TOKEN@github.com/o/r: the URL is only
-// shown, and saves are shared.
+// withoutCredentials drops what could carry credentials from a remote URL:
+// user information, such as a token in https://x-access-token:TOKEN@host/r,
+// and the query and fragment. The URL is only shown, and saves are shared.
+// It works on the text, so a password that doesn't parse as a URL goes too.
+// An scp-style remote, git@host:path, has no scheme and holds no password.
 func withoutCredentials(remote string) string {
-	u, err := url.Parse(remote)
-	if err != nil || u.Scheme == "" || u.User == nil {
-		return remote // such as scp-style git@host:path, which holds no password
+	i := strings.Index(remote, "://")
+	if i < 0 {
+		return remote
 	}
-	u.User = nil
-	return u.String()
+	rest := remote[i+3:]
+	if q := strings.IndexAny(rest, "?#"); q >= 0 {
+		rest = rest[:q]
+	}
+	// The last @ ends the user information, which may itself hold / or @.
+	if at := strings.LastIndexByte(rest, '@'); at >= 0 {
+		rest = rest[at+1:]
+	}
+	return remote[:i+3] + rest
 }

@@ -113,7 +113,9 @@ func (p *Pass) count(name string, n int) {
 // context: in the raw line, a secret just after an escaped newline has no
 // word boundary before it, and rules that need one miss it. A line with a
 // secret is encoded again with the secret replaced; every other line stays
-// byte for byte.
+// byte for byte. A line that isn't one JSON value, such as the end of a
+// file still being written, is left out: scanning it raw could miss a
+// secret, and a line being written is whole by the next save.
 func (p *Pass) JSONL(name string, data []byte) ([]byte, error) {
 	var out bytes.Buffer
 	out.Grow(len(data))
@@ -126,6 +128,9 @@ func (p *Pass) JSONL(name string, data []byte) ([]byte, error) {
 		data = data[len(line):]
 		body := bytes.TrimRight(line, "\r\n")
 		red, n, err := p.jsonLine(body)
+		if errors.Is(err, errNotJSON) {
+			continue
+		}
 		if err != nil {
 			return nil, err
 		}
@@ -140,6 +145,8 @@ func (p *Pass) JSONL(name string, data []byte) ([]byte, error) {
 	p.count(name, total)
 	return out.Bytes(), nil
 }
+
+var errNotJSON = errors.New("not one JSON value")
 
 func (p *Pass) jsonLine(line []byte) ([]byte, int, error) {
 	if len(bytes.TrimSpace(line)) == 0 {
@@ -157,9 +164,7 @@ func (p *Pass) jsonLine(line []byte) ([]byte, int, error) {
 	dec := json.NewDecoder(bytes.NewReader(line))
 	dec.UseNumber()
 	if err := dec.Decode(&v); err != nil || dec.More() || !utf8.Valid(line) {
-		// Not one JSON value: scan it as text.
-		out, n, err := p.r.redact(p.ctx, "", string(line), p)
-		return []byte(out), n, err
+		return nil, 0, errNotJSON
 	}
 	p.scanned += int64(len(line))
 	left, n := p.left, 0

@@ -195,7 +195,7 @@ func TestHookSaveRedacts(t *testing.T) {
 	if strings.Contains(out, fake) {
 		t.Error("the output repeats the secret")
 	}
-	if _, err := os.Stat(filepath.Join(home, ".sesh", "scanned", "redact-1")); err != nil {
+	if _, err := os.Stat(scanCache("redact-1")); err != nil {
 		t.Errorf("no scan cache: %v", err)
 	}
 }

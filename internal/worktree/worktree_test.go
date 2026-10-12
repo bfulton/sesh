@@ -276,6 +276,9 @@ func TestWithoutCredentials(t *testing.T) {
 		"https://github.com/o/r.git":                       "https://github.com/o/r.git",
 		"git@github.com:o/r.git":                           "git@github.com:o/r.git",
 		"/srv/git/r.git":                                   "/srv/git/r.git",
+		"https://host/r.git?access_token=abc123":           "https://host/r.git",
+		"https://user:p%zz@host/r.git":                     "https://host/r.git",
+		"https://user:pa/ss@host/r.git":                    "https://host/r.git",
 	} {
 		if got := withoutCredentials(in); got != want {
 			t.Errorf("withoutCredentials(%q) = %q, want %q", in, got, want)
