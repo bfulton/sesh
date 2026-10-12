@@ -121,6 +121,32 @@ func TestLibraryPullAndSearch(t *testing.T) {
 	if h := lib2.Search("railway", 5); len(h) != 1 {
 		t.Fatalf("updated session not pulled: %+v", h)
 	}
+
+	// Listing counts every message of a kind and pages through them, with
+	// the message numbers read_messages uses.
+	user, total := lib2.ListMessages("user", nil, 0, 10)
+	if total != 2 || len(user) != 2 || user[0].Session.Session != "s-two" || user[1].Session.Session != "s-one" {
+		t.Fatalf("user messages = %+v, total %d", user, total)
+	}
+	for _, m := range user {
+		got, _, _ := lib2.Messages(m.Session.ID(), m.Seq, 1)
+		if len(got) != 1 || got[0] != m.Entry {
+			t.Errorf("message #%d of %s is %+v, listed as %+v", m.Seq, m.Session.Session, got, m.Entry)
+		}
+	}
+	if page, total := lib2.ListMessages("user", nil, 1, 1); total != 2 || len(page) != 1 || page[0].Session.Session != "s-one" {
+		t.Errorf("second page = %+v, total %d", page, total)
+	}
+	if all, total := lib2.ListMessages("", nil, 0, 100); total != 6 || len(all) != 6 || all[2].Kind != "tool_call" {
+		t.Errorf("every kind = %+v, total %d", all, total)
+	}
+	oneOnly := func(e vault.Entry) bool { return e.Session == "s-one" }
+	if page, total := lib2.ListMessages("assistant", oneOnly, 0, 10); total != 1 || len(page) != 1 || page[0].Text != "Done." {
+		t.Errorf("filtered = %+v, total %d", page, total)
+	}
+	if page, total := lib2.ListMessages("user", nil, 5, 10); total != 2 || len(page) != 0 {
+		t.Errorf("past the end = %+v, total %d", page, total)
+	}
 }
 
 // A session restored from someone else's share token is in no catalog the

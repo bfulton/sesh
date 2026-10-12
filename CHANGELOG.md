@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- The `list_messages` MCP tool lists every message of one kind, by default
+  everything the user wrote, with the total count, so an agent can answer
+  questions about a whole history, such as how often something happens,
+  instead of sampling search results.
+
 ### Fixed
 
 - The Release workflow adds the binaries to a release created on GitHub's

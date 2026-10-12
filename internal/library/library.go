@@ -285,6 +285,38 @@ func (l *Library) SearchMessages(query string, limit int) []Hit {
 	return out
 }
 
+// Listed is one message from ListMessages, with where it sits.
+type Listed struct {
+	Session vault.Entry // its session
+	Seq     int         // message number, as read_messages counts
+	transcript.Entry
+}
+
+// ListMessages lists every message of kind ("" for every kind) in the
+// sessions keep accepts (nil keeps all), most recently active session first
+// and in order within a session. It returns up to limit of them from offset
+// on, and how many there are in all, so an agent can count and page through
+// a whole history instead of sampling search results.
+func (l *Library) ListMessages(kind string, keep func(vault.Entry) bool, offset, limit int) ([]Listed, int) {
+	var out []Listed
+	total := 0
+	for _, e := range l.Entries {
+		if keep != nil && !keep(e) {
+			continue
+		}
+		for i, en := range l.sessions[e.ID()].Entries {
+			if kind != "" && en.Kind != kind {
+				continue
+			}
+			if total >= offset && len(out) < limit {
+				out = append(out, Listed{Session: e, Seq: i, Entry: en})
+			}
+			total++
+		}
+	}
+	return out, total
+}
+
 // Messages returns up to n messages of a session, by entry ID, starting at
 // start, with the session's total message count.
 func (l *Library) Messages(sessionID string, start, n int) ([]transcript.Entry, int, error) {
