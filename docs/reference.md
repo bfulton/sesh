@@ -43,6 +43,7 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | --- | --- |
 | `search_messages` | Finds individual messages across all sessions, with each one's session id and message number |
 | `read_messages` | Reads consecutive messages of one session in full; tool output is trimmed |
+| `list_messages` | Lists every message of one kind, by default the user's, across all sessions or those chosen by session or start date, with the total count, a page at a time |
 | `search_sessions` | Finds sessions, with a snippet of the best-matching message |
 | `list_sessions` | Lists the most recently saved sessions with their titles |
 | `get_session` | Reads a session's conversation, with tool calls and results trimmed to fit |
