@@ -3,6 +3,7 @@
 //
 //	sesh init                  create your vault key and set up storage
 //	sesh status                show the vault, storage and last hook run
+//	sesh version               print this binary's version
 //	sesh save                  save this session; print its share token
 //	sesh restore <token|id>    continue a saved session here
 //	sesh sync / watch          save every local session that changed
@@ -15,6 +16,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"runtime/debug"
 )
 
 const usageText = `sesh keeps your agent sessions in storage you own.
@@ -23,6 +25,7 @@ Set up:
   sesh init [-store URL]        create a vault key and choose storage
   sesh key                      print your vault key (for other devices)
   sesh status                   show the vault, storage and last hook run
+  sesh version                  print this binary's version
 
 Keep:
   sesh save                     save the current session; print its share token
@@ -63,6 +66,23 @@ var subcommands = map[string]func([]string) error{
 	"mcp":     cmdMCP,
 	"serve":   cmdServe,
 	"hook":    func([]string) error { return cmdHook(os.Stdin, os.Stdout) },
+	"version": func([]string) error { fmt.Println(versionString()); return nil },
+}
+
+// version is the release this binary was built for, set by the release
+// build with -ldflags "-X main.version=v0.3.0".
+var version string
+
+// versionString is the release this binary was built for: the one stamped
+// at build time, else the module version go install recorded, else "dev".
+func versionString() string {
+	if version != "" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return "dev"
 }
 
 func main() {

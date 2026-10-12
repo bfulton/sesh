@@ -123,7 +123,7 @@ func (s *mcpServer) handle(req rpcRequest) (any, *rpcError) {
 		return map[string]any{
 			"protocolVersion": p.ProtocolVersion,
 			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "sesh", "version": "0.2.0"},
+			"serverInfo":      map[string]any{"name": "sesh", "version": versionString()},
 			"instructions": "sesh holds the user's past AI agent sessions. When the user refers to earlier work, " +
 				"decisions or conversations: search_messages to find the relevant messages, then read_messages " +
 				"around them for the full text. search_sessions and list_sessions give an overview; get_session " +

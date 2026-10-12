@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Builds sesh's release binaries into OUTDIR: one for each OS and CPU the
+# plugin supports, named sesh_<os>_<arch> (.exe on Windows), and SHA256SUMS
+# listing them. The plugin's launcher downloads a binary by that name and
+# checks it against SHA256SUMS.
+#
+#   scripts/release-build v0.3.0 dist
+set -euo pipefail
+
+version=${1:?usage: release-build VERSION OUTDIR}
+out=${2:?usage: release-build VERSION OUTDIR}
+mkdir -p "$out"
+for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
+  os=${target%/*}
+  arch=${target#*/}
+  name="sesh_${os}_${arch}"
+  if [ "$os" = windows ]; then name="$name.exe"; fi
+  CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w -X main.version=$version" -o "$out/$name" ./cmd/sesh
+done
+(cd "$out" && sha256sum sesh_* >SHA256SUMS)

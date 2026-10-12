@@ -1,7 +1,11 @@
 package main
 
 import (
+	"crypto/sha256"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -94,7 +98,7 @@ printf '#!/bin/sh\necho installed\n' >"$GOBIN/sesh" && chmod +x "$GOBIN/sesh"`)
 		} else {
 			stub(t, filepath.Join(bin, "go"), "echo 'go: no network' >&2; exit 1")
 		}
-		return []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + home, "CLAUDE_PLUGIN_DATA=" + data}, data
+		return []string{"PATH=" + bin + ":/usr/bin:/bin", "HOME=" + home, "CLAUDE_PLUGIN_DATA=" + data, "SESH_VERSION=main"}, data
 	}
 	run := func(env []string, stdin string, args ...string) (string, error) {
 		cmd := exec.Command(bash, append([]string{script}, args...)...)
@@ -159,6 +163,66 @@ printf '#!/bin/sh\necho installed\n' >"$GOBIN/sesh" && chmod +x "$GOBIN/sesh"`)
 			t.Errorf("got %+v; want the install error and SESH_BIN", resp)
 		}
 	})
+	// A release tag is downloaded from the release and checked against its
+	// SHA256SUMS; anything wrong falls back to go install.
+	asset := "sesh_" + runtime.GOOS + "_" + runtime.GOARCH
+	release := func(t *testing.T, sum string) string {
+		binary := "#!/bin/sh\necho downloaded\n"
+		if sum == "" {
+			sum = fmt.Sprintf("%x", sha256.Sum256([]byte(binary)))
+		}
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch r.URL.Path {
+			case "/v9.9.9/" + asset:
+				fmt.Fprint(w, binary)
+			case "/v9.9.9/SHA256SUMS":
+				fmt.Fprintf(w, "%s  sesh_other_arch\n%s  %s\n", strings.Repeat("0", 64), sum, asset)
+			default:
+				http.NotFound(w, r)
+			}
+		}))
+		t.Cleanup(srv.Close)
+		return srv.URL
+	}
+	withRelease := func(env []string, url string) []string {
+		return append(env, "SESH_VERSION=v9.9.9", "SESH_RELEASES="+url)
+	}
+	if runtime.GOOS == "linux" || runtime.GOOS == "darwin" {
+		t.Run("downloads the release", func(t *testing.T) {
+			env, data := setup(t, false)
+			out, err := run(withRelease(env, release(t, "")), "", "list")
+			if err != nil || out != "downloaded\n" {
+				t.Errorf("got %q, %v; want the downloaded binary", out, err)
+			}
+			if v, _ := os.ReadFile(filepath.Join(data, "bin", "version")); string(v) != "v9.9.9\n" {
+				t.Errorf("version stamp %q", v)
+			}
+		})
+		t.Run("bad checksum", func(t *testing.T) {
+			env, data := setup(t, true)
+			out, err := run(withRelease(env, release(t, strings.Repeat("f", 64))), "", "list")
+			if err != nil || out != "installed\n" {
+				t.Errorf("got %q, %v; want go install after the checksum fails", out, err)
+			}
+			if log, _ := os.ReadFile(filepath.Join(data, "install.log")); !strings.Contains(string(log), "checksum") {
+				t.Errorf("install.log doesn't name the checksum: %q", log)
+			}
+		})
+		t.Run("no release", func(t *testing.T) {
+			env, _ := setup(t, true)
+			out, err := run(append(env, "SESH_VERSION=v8.8.8", "SESH_RELEASES="+release(t, "")), "", "list")
+			if err != nil || out != "installed\n" {
+				t.Errorf("got %q, %v; want go install", out, err)
+			}
+		})
+		t.Run("no release and no go", func(t *testing.T) {
+			env, _ := setup(t, false)
+			out, err := run(append(env, "SESH_VERSION=v8.8.8", "SESH_RELEASES="+release(t, "")), "", "list")
+			if err == nil || !strings.Contains(out, "downloading") || !strings.Contains(out, "go: no network") {
+				t.Errorf("got %q, %v; want both failures reported", out, err)
+			}
+		})
+	}
 	t.Run("hook gets the event", func(t *testing.T) {
 		env, data := setup(t, false)
 		stub(t, filepath.Join(data, "bin", "sesh"), `echo "$1 $(cat)"`)
