@@ -1,11 +1,19 @@
 name: Release
 
 # A v* tag builds the release binaries and publishes them as a GitHub
-# release, which the plugin's launcher downloads. A pull request that changes
-# the build runs it too, without publishing.
+# release, which the plugin's launcher downloads. If the release already
+# exists, as when it was created on GitHub's release page, the binaries are
+# added to it. Running the workflow by hand with a tag rebuilds that tag and
+# replaces its binaries. A pull request that changes the build runs it too,
+# without publishing.
 on:
   push:
     tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: The release tag to build and publish, such as v0.3.0
+        required: true
   pull_request:
     paths:
       - .github/workflows/release.yml
@@ -14,27 +22,36 @@ on:
 permissions:
   contents: read
 
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
+      - name: tag
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          case "$TAG" in v*) ;; *) echo "$TAG is not a v* tag"; exit 1 ;; esac
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event_name == 'workflow_dispatch' && format('refs/tags/{0}', inputs.tag) || '' }}
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
       - name: build
-        run: scripts/release-build "$GITHUB_REF_NAME" dist
+        run: scripts/release-build "$TAG" dist
       - name: check
         run: |
           (cd dist && sha256sum -c SHA256SUMS)
-          test "$(dist/sesh_linux_amd64 version)" = "$GITHUB_REF_NAME"
+          test "$(dist/sesh_linux_amd64 version)" = "$TAG"
       - uses: actions/upload-artifact@v4
         with:
           name: dist
           path: dist/
 
   publish:
-    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -48,5 +65,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "$GITHUB_REF_NAME" dist/* --repo "$GITHUB_REPOSITORY" --title "$GITHUB_REF_NAME" \
-            --notes "Changes: https://github.com/$GITHUB_REPOSITORY/blob/$GITHUB_REF_NAME/CHANGELOG.md"
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null; then
+            gh release upload "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$TAG" dist/* --repo "$GITHUB_REPOSITORY" --title "$TAG" --verify-tag \
+              --notes "Changes: https://github.com/$GITHUB_REPOSITORY/blob/$TAG/CHANGELOG.md"
+          fi
