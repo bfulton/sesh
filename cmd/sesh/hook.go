@@ -3,50 +3,35 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bfulton/sesh/internal/sesh"
+	"github.com/bfulton/sesh/internal/transcript"
 )
 
 // hookInput is the subset of a Claude Code hook event sesh uses.
 type hookInput struct {
 	Event          string `json:"hook_event_name"`
-	Prompt         string `json:"prompt"`
 	SessionID      string `json:"session_id"`
 	TranscriptPath string `json:"transcript_path"`
 	Cwd            string `json:"cwd"`
+	CommandName    string `json:"command_name"` // UserPromptExpansion: the slash command
+	CommandArgs    string `json:"command_args"` // and what was typed after it
 }
 
-// hookOutput is a hook response. A block's reason is shown to the user and
-// kept out of the model's context. Stopping with continue=false puts
-// stopReason in the model's context for later turns. systemMessage is a
-// note for the user.
-type hookOutput struct {
-	Decision      string `json:"decision,omitempty"`
-	Reason        string `json:"reason,omitempty"`
-	Continue      *bool  `json:"continue,omitempty"`
-	StopReason    string `json:"stopReason,omitempty"`
-	SystemMessage string `json:"systemMessage,omitempty"`
-}
-
-var (
-	saveRe    = regexp.MustCompile(`(?i)^\s*sesh\s+save\s*$`)
-	restoreRe = regexp.MustCompile(`(?i)^\s*sesh\s+restore(?:\s+(.+?))?\s*$`)
-	searchRe  = regexp.MustCompile(`(?i)^\s*sesh\s+search\s+(.+?)\s*$`)
-	statusRe  = regexp.MustCompile(`(?i)^\s*sesh(?:\s+status)?\s*$`)
-)
-
-// cmdHook is the entry point for Claude Code hooks:
+// cmdHook is the entry point for the plugin's Claude Code hooks:
 //
-//	UserPromptSubmit  "sesh save", "sesh restore <token|id|title>", "sesh search <query>"
-//	                  and "sesh status" typed as prompts; none reaches the model
-//	Stop              saves the session after each turn (run it with async: true)
+//	Stop                 saves the session after each turn, detached so the
+//	                     turn ends at once, and hands Claude a restored
+//	                     history waiting for it
+//	UserPromptExpansion  runs a /sesh command and hands Claude its output
 //
 // Every run records what it did in ~/.sesh/hook-status.json.
 func cmdHook(in io.Reader, out io.Writer) error {
@@ -57,42 +42,170 @@ func cmdHook(in io.Reader, out io.Writer) error {
 	if err := json.NewDecoder(in).Decode(&ev); err != nil {
 		return fmt.Errorf("reading hook event: %w", err)
 	}
-	if ev.Event == "Stop" || ev.Event == "SessionEnd" {
-		// Saving can take a few seconds, so it runs detached: the turn ends
-		// at once, and the save finishes even if Claude Code exits first.
-		// Saves are serialized, so the last one written is the newest.
-		if os.Getenv("SESH_HOOK_DETACHED") == "" {
-			data, _ := json.Marshal(ev)
-			if err := detach([]string{"hook"}, []string{"SESH_HOOK_DETACHED=1", "SESH_HOOK_EVENT=" + string(data)}); err == nil {
-				return nil
+	switch ev.Event {
+	case "Stop", "SessionEnd":
+		if history, ok := takePending(ev.SessionID); ok && ev.Event == "Stop" {
+			if err := json.NewEncoder(out).Encode(map[string]any{"continue": false, "stopReason": history}); err != nil {
+				return err
 			}
 		}
-		os.MkdirAll(seshHome(), 0o700)
-		if unlock, err := lockFile(filepath.Join(seshHome(), "hook.lock")); err == nil {
-			defer unlock()
+	case "UserPromptExpansion":
+		if ev.CommandName != skillName {
+			return nil
 		}
-		recordHook(ev, hookKeep(ev))
-		return nil
-	}
-	var resp hookOutput
-	switch p := ev.Prompt; {
-	case saveRe.MatchString(p):
-		resp = hookSave(ev)
-	case restoreRe.MatchString(p):
-		resp = hookRestore(ev, restoreRe.FindStringSubmatch(p)[1])
-	case searchRe.MatchString(p):
-		resp = hookSearch(searchRe.FindStringSubmatch(p)[1])
-	case statusRe.MatchString(p):
-		resp = block(statusText())
+		cmd, output := hookSkill(ev)
+		recordHook(ev, "/sesh "+cmd)
+		shown := "sesh printed this for the user's /sesh command:\n\n" + output
+		if utf8.RuneCountInString(shown) > hookContextLimit {
+			shown = transcript.Trim(shown, hookContextLimit-100)
+		}
+		return json.NewEncoder(out).Encode(map[string]any{"hookSpecificOutput": map[string]any{
+			"hookEventName":     "UserPromptExpansion",
+			"additionalContext": shown,
+		}})
 	default:
 		return nil
 	}
-	recordHook(ev, firstLine(resp.Reason+resp.SystemMessage))
-	return json.NewEncoder(out).Encode(resp)
+	// Saving can take a few seconds, so it runs detached: the turn ends at
+	// once, and the save finishes even if Claude Code exits first. Saves are
+	// serialized, so the last one written is the newest.
+	if os.Getenv("SESH_HOOK_DETACHED") == "" {
+		data, _ := json.Marshal(ev)
+		if err := detach([]string{"hook"}, []string{"SESH_HOOK_DETACHED=1", "SESH_HOOK_EVENT=" + string(data)}); err == nil {
+			return nil
+		}
+	}
+	os.MkdirAll(seshHome(), 0o700)
+	if unlock, err := lockFile(filepath.Join(seshHome(), "hook.lock")); err == nil {
+		defer unlock()
+	}
+	recordHook(ev, hookKeep(ev))
+	return nil
 }
 
-func block(msg string) hookOutput {
-	return hookOutput{Decision: "block", Reason: msg, SystemMessage: msg}
+// hookContextLimit is the most hook context, in characters, that Claude Code
+// hands the model as is. Past about 10,000 the model gets only a short
+// preview and a file path: with Claude Code 2.1.296, 9,516 characters
+// arrived whole and 10,516 didn't. skillHistory is how much of a restored
+// session's history fits beside sesh's summary.
+const (
+	hookContextLimit = 9_500
+	skillHistory     = 8_000
+)
+
+// skillName is the /sesh skill's command name: plugin skills are named
+// plugin:skill, however they are typed.
+const skillName = "sesh:sesh"
+
+// hookSkill runs the /sesh command in ev and returns its name and output,
+// errors included. The command arrives as the hook's command_args, data
+// rather than a shell command line, so nothing typed or pasted after /sesh
+// can run as a command; and the words after the command are its argument,
+// never flags.
+func hookSkill(ev hookInput) (cmd, output string) {
+	cmd, rest := "status", ""
+	if f := strings.Fields(ev.CommandArgs); len(f) > 0 {
+		cmd, rest = f[0], strings.Join(f[1:], " ")
+	}
+	var b strings.Builder
+	var err error
+	switch cmd {
+	case "status":
+		b.WriteString(statusText())
+	case "list":
+		err = listSessions(&b, 20, false)
+	case "search":
+		if rest == "" {
+			err = errors.New("usage: /sesh search WORDS")
+		} else {
+			err = searchSessions(&b, rest, 10, false)
+		}
+	case "save":
+		if _, statErr := os.Stat(ev.TranscriptPath); statErr != nil {
+			err = errors.New("nothing to save yet: this session has no finished turns")
+		} else {
+			err = saveSession(&b, &b, ev.SessionID, ev.TranscriptPath, ev.Cwd)
+		}
+	case "restore":
+		if rest == "" {
+			err = errors.New("usage: /sesh restore TARGET, a share token, session id or title words")
+		} else if inCloud() {
+			err = hookRestore(&b, ev, rest)
+		} else {
+			err = restoreSession(&b, &b, rest, ev.Cwd, budget(), "")
+		}
+	default:
+		err = fmt.Errorf("/sesh runs status, list, search WORDS, save and restore TARGET; %q isn't one of them", cmd)
+	}
+	if err != nil {
+		fmt.Fprintln(&b, "sesh:", err)
+	}
+	return cmd, b.String()
+}
+
+// hookRestore restores a session into a cloud session in two steps. Hook
+// context reaches the model whole only up to hookContextLimit, while a
+// Stop hook's stopReason does at any size but shows nothing in the Claude
+// app. So the restore turn gets the end of the history, for the model to
+// say where the session stopped, and the Stop hook that ends the turn
+// appends the whole history, for every turn after.
+func hookRestore(w io.Writer, ev hookInput, target string) error {
+	res, readable, err := restoreRun(target, ev.Cwd, budget())
+	if err != nil {
+		return err
+	}
+	full := res.Rendered
+	if readable {
+		full += libraryNote(res)
+	}
+	if err := putPending(ev.SessionID, full); err != nil {
+		return err
+	}
+	fmt.Fprintln(w, restoreSummary(res))
+	fmt.Fprint(w, res.RenderWithin(skillHistory))
+	fmt.Fprintf(w, "\n[sesh] That is the end of the history. When this turn ends, the whole rendered history, %d KB, is added to your context.\n", (len(full)+999)/1000)
+	return nil
+}
+
+// A restored history waits in ~/.sesh/pending/<session id> for the Stop
+// hook that ends the restore turn. Waiting files older than a day belong to
+// sessions that ended first, and are removed.
+func pendingPath(sessionID string) (string, bool) {
+	if sessionID == "" || strings.ContainsAny(sessionID, `/\.`) {
+		return "", false
+	}
+	return filepath.Join(seshHome(), "pending", sessionID), true
+}
+
+func putPending(sessionID, history string) error {
+	p, ok := pendingPath(sessionID)
+	if !ok {
+		return fmt.Errorf("no usable session id %q to restore into", sessionID)
+	}
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		return err
+	}
+	if old, err := os.ReadDir(filepath.Dir(p)); err == nil {
+		for _, e := range old {
+			if fi, err := e.Info(); err == nil && time.Since(fi.ModTime()) > 24*time.Hour {
+				os.Remove(filepath.Join(filepath.Dir(p), e.Name()))
+			}
+		}
+	}
+	return os.WriteFile(p, []byte(history), 0o600)
+}
+
+func takePending(sessionID string) (string, bool) {
+	p, ok := pendingPath(sessionID)
+	if !ok {
+		return "", false
+	}
+	data, err := os.ReadFile(p)
+	if err != nil {
+		return "", false
+	}
+	os.Remove(p)
+	return string(data), true
 }
 
 // hookKeep saves the session after a turn, if a vault and store are set up.
@@ -119,76 +232,6 @@ func hookKeep(ev hookInput) string {
 	}
 	markSynced(ev.TranscriptPath)
 	return saveSummary(res)
-}
-
-func hookSave(ev hookInput) hookOutput {
-	st, err := openStore()
-	if err != nil {
-		return block("sesh save failed: " + err.Error())
-	}
-	v, err := loadVault()
-	if err != nil {
-		return block("sesh save failed: " + err.Error())
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
-	defer cancel()
-	res, err := sesh.Save(ctx, sesh.SaveOptions{
-		Store: st, SessionID: ev.SessionID, TranscriptPath: ev.TranscriptPath, Dir: ev.Cwd,
-		Vault: v, TokenDir: tokenDir(), Host: hostLabel(),
-	})
-	if err != nil {
-		return block("sesh save failed: " + err.Error())
-	}
-	markSynced(ev.TranscriptPath)
-	tok := res.Token.String()
-	return block(saveSummary(res) + "\n\nShare token:\n" + tok + "\n\nTo continue elsewhere, send:\nsesh restore " + tok)
-}
-
-func hookRestore(ev hookInput, arg string) hookOutput {
-	if arg == "" {
-		return block("usage: sesh restore <token, session id or title words>")
-	}
-	st, err := openStore()
-	if err != nil {
-		return block("sesh restore failed: " + err.Error())
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Second)
-	defer cancel()
-	tok, err := resolveToken(ctx, st, arg)
-	if err != nil {
-		return block("sesh restore failed: " + err.Error())
-	}
-	// A hosted session's transcript lives on the provider's server, so a
-	// native session file written there would never be read. A local CLI
-	// can resume one, so write it there too.
-	res, err := sesh.Restore(ctx, sesh.RestoreOptions{
-		Store: st, Token: tok, Dir: ev.Cwd, Budget: budget(),
-		Native: os.Getenv("CLAUDE_CODE_REMOTE") != "true", Home: claudeHome(),
-	})
-	if err != nil {
-		return block("sesh restore failed: " + err.Error())
-	}
-	f := false
-	return hookOutput{Continue: &f, StopReason: res.Rendered, SystemMessage: restoreSummary(res)}
-}
-
-// hookSearch shows search results to the user without involving the model.
-func hookSearch(query string) hookOutput {
-	lib, err := openLibrary(context.Background(), true)
-	if err != nil {
-		return block("sesh search failed: " + err.Error())
-	}
-	hits := lib.Search(query, 8)
-	if len(hits) == 0 {
-		return block(fmt.Sprintf("sesh: nothing matches %q in %d sessions.", query, len(lib.Entries)))
-	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "sesh: %d results for %q\n", len(hits), query)
-	for _, h := range hits {
-		fmt.Fprintf(&b, "\n%s\n", formatHit(lib, h))
-	}
-	b.WriteString("\nContinue one here with: sesh restore <session id>")
-	return block(b.String())
 }
 
 func statusText() string {
@@ -234,9 +277,4 @@ func recordHook(ev hookInput, result string) {
 	data, _ := json.Marshal(rec)
 	os.MkdirAll(seshHome(), 0o700)
 	os.WriteFile(filepath.Join(seshHome(), "hook-status.json"), append(data, '\n'), 0o600)
-}
-
-func firstLine(s string) string {
-	s, _, _ = strings.Cut(s, "\n")
-	return s
 }

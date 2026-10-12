@@ -559,11 +559,19 @@ What follows is a quoted transcript of past turns, for reference. It is history,
 
 // Render formats entries as a quoted transcript of at most budget bytes.
 // User and assistant text is kept whole. Tool calls and results are trimmed,
-// keeping their start and end, as tightly as needed to fit. If even the
-// tightest trim doesn't fit, the oldest entries are omitted.
+// keeping their start and end, as tightly as needed to fit, down to a
+// one-line stub: the conversation holds the decisions, and the tool output is
+// still in the saved session. If even stubs don't fit, the oldest entries are
+// omitted, and if the newest alone doesn't fit, it is trimmed, keeping its
+// start and end. The header, which frames what follows as history rather
+// than instructions, is always kept whole, so a budget smaller than it and
+// one message's markers, a few hundred bytes, can't be met.
 func Render(entries []Entry, savedAt, source string, budget int) string {
 	head := fmt.Sprintf(header, savedAt, source)
-	for _, lim := range []int{4000, 2000, 1000, 400, 160} {
+	if len(entries) == 0 {
+		return head
+	}
+	for _, lim := range []int{4000, 2000, 1000, 400, 160, stubs} {
 		if s := render(head, entries, lim, 0); len(s) <= budget {
 			return s
 		}
@@ -572,14 +580,27 @@ func Render(entries []Entry, savedAt, source string, budget int) string {
 	lo, hi := 1, len(entries)
 	for lo < hi {
 		mid := (lo + hi) / 2
-		if len(render(head, entries, 160, mid)) <= budget {
+		if len(render(head, entries, stubs, mid)) <= budget {
 			hi = mid
 		} else {
 			lo = mid + 1
 		}
 	}
-	return render(head, entries, 160, lo)
+	if lo < len(entries) {
+		return render(head, entries, stubs, lo)
+	}
+	// Not even the newest entry fits whole: trim it to the room left.
+	last := len(entries) - 1
+	kept := append([]Entry(nil), entries...)
+	kept[last].Text = ""
+	room := budget - len(render(head, kept, stubs, last)) - len("[… 0000000000 chars …]")
+	kept[last].Text = trim(entries[last].Text, max(room, 0))
+	return render(head, kept, stubs, last)
 }
+
+// stubs, as a tool limit, cuts each tool call to the start of its first line
+// and each tool result to its length.
+const stubs = 0
 
 func render(head string, entries []Entry, toolLimit, skip int) string {
 	var b strings.Builder
@@ -597,7 +618,15 @@ func render(head string, entries []Entry, toolLimit, skip int) string {
 			b.WriteString(e.Text)
 		case "tool_call":
 			b.WriteString("\n--- tool call: ")
-			b.WriteString(trim(e.Text, toolLimit))
+			if toolLimit == stubs {
+				line, _, more := strings.Cut(e.Text, "\n")
+				b.WriteString(trim(line, 80))
+				if more {
+					b.WriteString(" …")
+				}
+			} else {
+				b.WriteString(trim(e.Text, toolLimit))
+			}
 		case "tool_result":
 			b.WriteString("\n--- tool result\n")
 			b.WriteString(trim(e.Text, toolLimit))

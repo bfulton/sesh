@@ -28,17 +28,27 @@ type mcpServer struct {
 	mu      sync.Mutex
 	lib     *library.Library
 	pulled  time.Time
+	loaded  time.Time // when lib was read from the cache
 	pullErr error
 }
 
 // library returns the library, pulling from the store at most once a minute.
-// If the store can't be reached it falls back to this device's copy.
+// If the store can't be reached it falls back to this device's copy. Between
+// pulls it rereads the cache when a session was added to it, as a restore
+// does.
 func (s *mcpServer) library(ctx context.Context) (*library.Library, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if s.lib != nil && time.Since(s.pulled) < time.Minute {
+		if fi, err := os.Stat(s.lib.Dir); err == nil && fi.ModTime().After(s.loaded) {
+			now := time.Now()
+			if lib, err := openLibrary(ctx, false); err == nil {
+				s.lib, s.loaded = lib, now
+			}
+		}
 		return s.lib, nil
 	}
+	now := time.Now()
 	lib, err := openLibrary(ctx, true)
 	if err != nil {
 		s.pullErr = err
@@ -51,7 +61,7 @@ func (s *mcpServer) library(ctx context.Context) (*library.Library, error) {
 	} else {
 		s.pullErr = nil
 	}
-	s.lib, s.pulled = lib, time.Now()
+	s.lib, s.pulled, s.loaded = lib, now, now
 	return lib, nil
 }
 

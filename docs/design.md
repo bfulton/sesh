@@ -24,6 +24,16 @@ Checked on October 10 and 11, 2026, in Claude Code cloud sessions and with the C
 | `stopReason` has no practical size cap | 200,000 characters stored whole; facts at start, middle and end recalled |
 | `decision: "block"` does not reach the model's context | A blocked prompt's text was not recalled later |
 | The app does not display `stopReason` | The restore turn showed nothing in the Claude app |
+| The app displays no hook output | In the iOS app, nothing showed for a blocked `sesh status`, for a `stopReason` or the `systemMessage` beside it, or for a `systemMessage` on a prompt that went through, though each was recorded |
+| A Stop hook's `stopReason` reaches the next turn whole | After a visible reply, a Stop hook appended 100 KB; the next turn recalled words from its start and its end. It is stored as a `hook_stopped_continuation` attachment, which sesh's parser skips |
+| An interactive terminal prints a Stop hook's `stopReason` | The end of an appended history showed under the reply |
+| What a hook prints is kept | A cloud session's event stream stores each hook's stdout (`hook_response`); a block message is also written to the transcript, which sesh archives |
+| An account-level plugin reaches cloud sessions | A cloud session loaded `sesh@synced` from `~/.claude/plugins/synced/`; its `Stop` hook ran every turn, and its MCP server connected once installed |
+| A skill's `!` commands put its arguments in a shell | `/sesh restore abc; touch FILE` created `FILE` in auto mode; in the default mode the permission check aborted the skill |
+| A `UserPromptExpansion` hook gets a typed command's arguments as data | `command_args` held `;`, `$(…)` and quotes verbatim, nothing ran, and the hook's `additionalContext` reached the model. `command_name` is `plugin:skill` even when typed bare |
+| Hook context past about 10,000 characters reaches the model only as a preview | 9,516 characters arrived whole; from 10,516 the model got a 2 KB preview and a file path |
+| A failing `!` command aborts the skill; `!` commands time out after 120 seconds | The model never ran, only `Shell command failed for pattern …` was reported; `sesh watch` was moved to the background after 120 s |
+| A model given a rendered tail finds the rest with sesh's tools | Asked about two decisions left out of a 30 KB render of a 2 MB session, Haiku answered both with `search_messages` and `read_messages` (7 turns) and couldn't without them; from a 150 KB render it answered in 1 turn |
 | The local CLI resumes a transcript it didn't write | Hand-written session files resume; a restored session recalled a fact seen only in a tool result; signed thinking blocks resumed cleanly (same account) |
 | Async hooks don't finish under `claude -p` | The same `Stop` hook saved when synchronous and never ran to completion with `async: true` |
 | Plugin hooks and MCP work with `--plugin-dir` | A turn was kept automatically; typed commands ran with no model call; MCP tools `mcp__plugin_sesh_sesh__*` connected |
@@ -67,8 +77,11 @@ Real turns reach only a session started from a session file: a running CLI never
 | Where `sesh restore` runs | Result |
 | --- | --- |
 | A shell | A native session file for the target directory; prints `claude --resume <id>` |
-| The hook, in a local CLI session | The rendered history as `stopReason`, so this session continues now, plus a native session file for real turns |
-| The hook, in a hosted session (`CLAUDE_CODE_REMOTE=true`) | The rendered history as `stopReason` only |
+| `/sesh restore` in a local CLI session | The same: a native session file, and the `claude --resume` command |
+| `/sesh restore` in a hosted session (`CLAUDE_CODE_REMOTE=true`) | The end of the rendered history in that turn, then the whole of it from the Stop hook |
+| `sesh restore` in a hosted session | The rendered history, printed |
+
+Either way the restored session joins this device's library, even when it came from someone else's share token, so sesh's search tools can read what the rendered history trimmed or left out. That lets the history stay small: 100 KB by default, about 45,000 tokens. It keeps every user and assistant message it can, since that is where decisions are, and shrinks tool calls and results to one-line stubs before leaving any message out.
 
 The **native file** is the transcript with each record's `sessionId` and `cwd` rewritten; content, uuids and the `parentUuid` chain are unchanged. It goes in `~/.claude/projects/<cwd>/`, where `<cwd>` has every character other than an ASCII letter or digit replaced by `-`. The memory folder is copied alongside, never overwriting existing files. The session folder's files go in the copy's own folder, subagent transcripts rewritten the same way, and references to the original folder are pointed at the copy's, so a resumed agent can reread a large tool output.
 
@@ -76,7 +89,7 @@ A copy is a fork, so it leaves out what binds the original to live state. Claude
 
 `claude --resume` loads a session by following `parentUuid` back from its latest message. A compaction writes a `compact_boundary` record with no parent, so a compacted session resumes from its last compaction: the summary, the prompt of the turn the compaction interrupted (the summary names it in `summarizedTurnPromptUuids`), and what came after. Earlier turns stay in the file, unread; this is how Claude Code treats any compacted session, not something the copy changes. Tested here: a copy of this session, compacted mid-turn at 785k tokens, resumed in a terminal showing 1 of its 60 prompts. Relinking the boundary would load the full history and force another compaction, so restore leaves it alone and says how many prompts the resume brings back; `sesh show` prints the whole conversation. Compaction summaries are left out of the rendered history and the search index, since the turns they summarize are there in full.
 
-The **rendered history** is a quoted record of past turns, framed as history rather than instructions. User and assistant text is kept whole; tool calls and results are trimmed, keeping their start and end; thinking and harness records are dropped. It fits a budget (300 KB by default): tool output is trimmed harder first, then the oldest turns are dropped, with a marker. This session's 3 MB transcript renders to about 300 KB with nothing dropped.
+The **rendered history** is a quoted record of past turns, framed as history rather than instructions. User and assistant text is kept whole; tool calls and results are trimmed, keeping their start and end; thinking and harness records are dropped. It fits a budget (100 KB by default, about 45,000 tokens): tool output is trimmed harder first, down to a one-line stub per call and result, and only then are the oldest turns dropped, with a marker. A 2 MB design session renders to 100 KB keeping 31 of its 34 prompts; the search tools reach the rest.
 
 ## Remember
 
@@ -92,7 +105,13 @@ The **index** is in-memory BM25 (k1 = 1.2, b = 0.75) over every message, plus ea
 
 ## Plugin
 
-`plugin/` is a Claude Code plugin, and the repository is also its marketplace ([files](reference.md#plugin-files)). Hooks run on every prompt and every turn, so the launcher must be fast and must never break a session: prompts that don't start with "sesh" return in about 20 ms without touching the binary, and if sesh can't be installed, hooks do nothing and a typed sesh command explains why.
+`plugin/` is a Claude Code plugin, and the repository is also its marketplace ([files](reference.md#plugin-files)). The `Stop` hook runs after every turn, so the launcher must never break a session: if sesh can't be installed, the hook does nothing.
+
+Commands are the `/sesh` skill, not prompts a hook intercepts: the app shows nothing a hook prints for a blocked prompt, while a skill's output reaches the user through the model's reply. The skill itself runs nothing. Its arguments reach sesh through a `UserPromptExpansion` hook, as data: a skill's `!` command would put them in a shell, where a pasted "share token" could run commands. `sesh hook` runs only `status`, `list`, `search`, `save` and `restore`, takes everything after the command word as its argument, never as flags, and hands the model what sesh printed, errors included. That costs one model turn per command; for a restore, the turn orients the user. Only the user can run it.
+
+Restoring into a cloud session takes two steps, because no single channel both shows and carries enough. Hook context reaches the model whole only up to about 10,000 characters, so the restore turn gets the end of the history, 8 KB, and the model says where the session stopped. A Stop hook's `stopReason` reaches the model whole at any size but shows nothing in the app, so the history waits in `~/.sesh/pending/<session id>` until the Stop hook that ends the turn appends all of it. After restoring a 2 MB session this way, the next turn answered a question about an early decision without tools; anything past the budget is in the library for sesh's search tools. A terminal would print the appended history, but only cloud sessions take this path, and a local `/sesh restore` writes a session for `claude --resume` instead.
+
+Whatever sesh prints inside a session is kept: in the transcript, which sesh itself archives, and, in a cloud session, in the provider's event stream. So inside Claude Code, sesh never prints the vault key.
 
 ## Out of scope
 
@@ -114,9 +133,7 @@ None of these restore into a hosted session, carry the working copy, keep sessio
 
 ## Open questions
 
-- Whether an account-level plugin install reaches cloud sessions. The docs cover only terminal sessions and Cowork; this session shows a per-account `~/.claude/plugins/synced/` folder, empty because nothing is enabled.
-- Which hook output the Claude app displays for a blocked prompt: `reason`, `systemMessage`, or neither. The share token is shown through both.
 - Whether a prompt can be submitted at all once an account's quota is exhausted.
 - Whether signed thinking blocks in a native session resume under a different account. If not, restore should drop them, as session-migrate does.
 - Redacting secrets from tool output before saving. Today a session's archive holds everything its transcript does.
-- How large a rendered history can be before the target model's context suffers.
+- How large a rendered history can be before the target model's context suffers, and how small before it misses what matters. The 100 KB default rests on one long session and one small model.

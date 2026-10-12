@@ -5,6 +5,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"os"
 	"path"
 	"path/filepath"
 	"strings"
@@ -41,19 +43,24 @@ func cmdList(args []string) error {
 	fs, offline := libraryFlags("list")
 	n := fs.Int("n", 20, "how many sessions to show")
 	fs.Parse(args)
-	lib, err := openLibrary(context.Background(), !*offline)
+	return listSessions(os.Stdout, *n, *offline)
+}
+
+// listSessions writes the n most recently active sessions to w.
+func listSessions(w io.Writer, n int, offline bool) error {
+	lib, err := openLibrary(context.Background(), !offline)
 	if err != nil {
 		return err
 	}
 	for i, e := range lib.Entries {
-		if i == *n {
-			fmt.Printf("… %d more\n", len(lib.Entries)-i)
+		if i == n {
+			fmt.Fprintf(w, "… %d more\n", len(lib.Entries)-i)
 			break
 		}
-		fmt.Println(formatEntry(lib, e))
+		fmt.Fprintln(w, formatEntry(lib, e))
 	}
 	if len(lib.Entries) == 0 {
-		fmt.Println("No sessions yet. Run sesh sync, or sesh save in a session.")
+		fmt.Fprintln(w, "No sessions yet. Run sesh sync, or sesh save in a session.")
 	}
 	return nil
 }
@@ -66,18 +73,23 @@ func cmdSearch(args []string) error {
 	if query == "" {
 		return errors.New("usage: sesh search <query>")
 	}
-	lib, err := openLibrary(context.Background(), !*offline)
+	return searchSessions(os.Stdout, query, *n, *offline)
+}
+
+// searchSessions writes the n sessions that best match query to w.
+func searchSessions(w io.Writer, query string, n int, offline bool) error {
+	lib, err := openLibrary(context.Background(), !offline)
 	if err != nil {
 		return err
 	}
-	hits := lib.Search(query, *n)
+	hits := lib.Search(query, n)
 	if len(hits) == 0 {
-		fmt.Printf("Nothing matches %q in %d sessions.\n", query, len(lib.Entries))
+		fmt.Fprintf(w, "Nothing matches %q in %d sessions.\n", query, len(lib.Entries))
 		return nil
 	}
 	for _, h := range hits {
-		fmt.Println(formatHit(lib, h))
-		fmt.Println()
+		fmt.Fprintln(w, formatHit(lib, h))
+		fmt.Fprintln(w)
 	}
 	return nil
 }

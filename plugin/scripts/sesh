@@ -1,30 +1,20 @@
 #!/usr/bin/env bash
 # Runs sesh for the Claude Code plugin, installing it on first use.
 #
-# Hooks call this on every prompt and every turn, so it must be fast and
-# must never break a session: prompts that aren't sesh commands return at
-# once without touching the binary, and if sesh can't be installed the hook
-# does nothing (a typed sesh command gets an explanation instead).
+# The Stop hook calls this after every turn, so it must never break a
+# session: if sesh can't be installed, the hook does nothing. /sesh and the
+# MCP server get the install error instead.
 #
 # Where the binary comes from, in order: $SESH_BIN, a copy installed here
-# earlier, sesh on PATH, or `go install` of the plugin's pinned version.
+# earlier, or `go install` of the plugin's pinned version. A sesh on PATH is
+# never used: other tools share the name, and it would skip the pin. Set
+# SESH_BIN to use your own build.
 set -u
 
 VERSION="${SESH_VERSION:-main}"   # module version: a tag, branch or commit; installed once per value
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.sesh/plugin}"
 BIN="$DATA/bin/sesh"
 STAMP="$DATA/bin/version"
-
-input=""
-if [ "${1:-}" = hook ]; then
-  input=$(cat)
-  case "$input" in
-    *'"UserPromptSubmit"'*)
-      # Only prompts starting with "sesh" are commands.
-      printf '%s' "$input" | grep -qiE '"prompt"[[:space:]]*:[[:space:]]*"[[:space:]]*sesh' || exit 0
-      ;;
-  esac
-fi
 
 install() {
   mkdir -p "$DATA/bin" || return 1
@@ -36,30 +26,21 @@ install() {
 pick() {
   if [ -n "${SESH_BIN:-}" ] && [ -x "$SESH_BIN" ]; then echo "$SESH_BIN"; return 0; fi
   if [ -x "$BIN" ] && [ "$(cat "$STAMP" 2>/dev/null)" = "$VERSION" ]; then echo "$BIN"; return 0; fi
-  if command -v sesh >/dev/null 2>&1 && [ "$(command -v sesh)" != "$0" ]; then command -v sesh; return 0; fi
-  # go install puts binaries in $GOBIN or $GOPATH/bin (~/go/bin), often not on PATH.
-  for d in "${GOBIN:-}" "${GOPATH:-$HOME/go}/bin"; do
-    if [ -n "$d" ] && [ -x "$d/sesh" ]; then echo "$d/sesh"; return 0; fi
-  done
   install && echo "$BIN"
 }
 
 if ! exe=$(pick); then
   if [ "${1:-}" = hook ]; then
-    case "$input" in
-      *'"UserPromptSubmit"'*)
-        msg="sesh couldn't be installed: $(tail -1 "$DATA/install.log" 2>/dev/null). Set SESH_BIN, or put sesh on PATH."
-        printf '{"decision":"block","reason":%s}\n' "$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"
+    # The Stop hook does nothing; /sesh says why it can't run.
+    case "$(cat)" in
+      *'"UserPromptExpansion"'*)
+        msg="sesh printed this for the user's /sesh command: sesh couldn't be installed: $(tail -1 "$DATA/install.log" 2>/dev/null | tr -d '\000-\037'). Set SESH_BIN to a sesh binary."
+        printf '{"hookSpecificOutput":{"hookEventName":"UserPromptExpansion","additionalContext":%s}}\n' "$(printf '%s' "$msg" | sed 's/\\/\\\\/g; s/"/\\"/g; s/^/"/; s/$/"/')"
         ;;
     esac
     exit 0
   fi
-  echo "sesh: couldn't install: $(cat "$DATA/install.log" 2>/dev/null)" >&2
+  echo "sesh: couldn't install: $(cat "$DATA/install.log" 2>/dev/null). Set SESH_BIN to a sesh binary." >&2
   exit 1
 fi
-
-if [ "${1:-}" = hook ]; then
-  printf '%s' "$input" | "$exe" "$@"
-else
-  exec "$exe" "$@"
-fi
+exec "$exe" "$@"

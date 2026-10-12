@@ -21,8 +21,10 @@ import (
 	"github.com/bfulton/sesh/internal/worktree"
 )
 
-// DefaultBudget is the default size of a rendered history, in bytes.
-const DefaultBudget = 300_000
+// DefaultBudget is the default size of a rendered history, in bytes: about
+// 45,000 tokens of a typical transcript. The full session stays in the store,
+// for sesh's search tools to read.
+const DefaultBudget = 100_000
 
 // SaveOptions says what to save and where.
 type SaveOptions struct {
@@ -118,15 +120,7 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 		res.Manifest.Patches = append(res.Manifest.Patches, p)
 	}
 	if o.Vault != nil {
-		e := vault.Entry{
-			Session: o.SessionID, Source: a.Manifest.Source, Title: meta.Title,
-			Cwd: meta.Cwd, Repo: a.Manifest.Repo, Branch: meta.Branch, Started: meta.Started, Updated: meta.Updated,
-			SavedAt: a.Manifest.SavedAt, Messages: meta.Messages, Bytes: len(data),
-			Token: tok.String(), Host: o.Host,
-		}
-		if a.Manifest.Branch != "" {
-			e.Branch = a.Manifest.Branch
-		}
+		e := CatalogEntry(a, tok, o.Host)
 		// The catalog is written after the archive, so an entry never points
 		// at an archive that isn't there.
 		if err := o.Vault.Put(ctx, o.Store, e); err != nil {
@@ -135,6 +129,23 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 		res.Entry = &e
 	}
 	return res, nil
+}
+
+// CatalogEntry describes an archive, saved under tok, as a vault catalog
+// entry.
+func CatalogEntry(a *archive.Archive, tok token.Token, host string) vault.Entry {
+	meta := transcript.ReadMeta(a.Transcript)
+	m := a.Manifest
+	e := vault.Entry{
+		Session: m.Session, Source: m.Source, Title: meta.Title,
+		Cwd: meta.Cwd, Repo: m.Repo, Branch: meta.Branch, Started: meta.Started, Updated: meta.Updated,
+		SavedAt: m.SavedAt, Messages: meta.Messages, Bytes: len(a.Transcript),
+		Token: tok.String(), Host: host,
+	}
+	if m.Branch != "" {
+		e.Branch = m.Branch
+	}
+	return e
 }
 
 // sessionToken returns the token saved for a session, creating one if needed.
@@ -189,6 +200,14 @@ type RestoreResult struct {
 	NativePath    string               // its transcript file
 	NativeErr     string               // why it couldn't be written, if Native was asked for
 	Resumable     transcript.Resumable // how much of it claude --resume loads
+
+	entries         []transcript.Entry
+	savedAt, source string
+}
+
+// RenderWithin renders the history again, within budget bytes.
+func (r *RestoreResult) RenderWithin(budget int) string {
+	return transcript.Render(r.entries, r.savedAt, r.source, budget)
 }
 
 // Restore downloads a saved session, restores its working copy into Dir and
@@ -223,7 +242,8 @@ func Restore(ctx context.Context, o RestoreOptions) (*RestoreResult, error) {
 			source += " on branch " + m.Branch
 		}
 	}
-	res.Rendered = transcript.Render(entries, m.SavedAt.Format(time.RFC3339), source, o.Budget)
+	res.entries, res.savedAt, res.source = entries, m.SavedAt.Format(time.RFC3339), source
+	res.Rendered = res.RenderWithin(o.Budget)
 
 	if o.Native {
 		id, err := newSessionID()

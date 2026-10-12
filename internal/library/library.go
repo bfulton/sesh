@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/bfulton/sesh/internal/archive"
 	"github.com/bfulton/sesh/internal/sesh"
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
@@ -37,6 +38,7 @@ type cached struct {
 
 // Library is the local copy of a vault and its index.
 type Library struct {
+	Dir      string        // the cache folder; it changes when a session is added
 	Entries  []vault.Entry // most recently active first
 	sessions map[string]*cached
 	index    *Index
@@ -55,7 +57,7 @@ func Open(ctx context.Context, st store.Store, v *vault.Vault, cacheDir string, 
 	if err != nil {
 		return nil, err
 	}
-	lib := &Library{sessions: local}
+	lib := &Library{Dir: dir, sessions: local}
 	if pull {
 		entries, bad, err := v.List(ctx, st)
 		if err != nil {
@@ -95,11 +97,13 @@ func loadCache(dir string) (map[string]*cached, error) {
 	return out, nil
 }
 
-// pull downloads sessions that are new or saved since they were cached.
+// pull downloads sessions that are new or saved since they were cached, and
+// any cached under another token than the catalog's: the catalog decides
+// what a vault session id holds.
 func (l *Library) pull(ctx context.Context, st store.Store, dir string, entries []vault.Entry) error {
 	var todo []vault.Entry
 	for _, e := range entries {
-		if c, ok := l.sessions[e.ID()]; !ok || c.Format != cacheFormat || e.SavedAt.After(c.Entry.SavedAt) {
+		if c, ok := l.sessions[e.ID()]; !ok || c.Format != cacheFormat || c.Entry.Token != e.Token || e.SavedAt.After(c.Entry.SavedAt) {
 			todo = append(todo, e)
 		}
 	}
@@ -141,7 +145,11 @@ func fetch(ctx context.Context, st store.Store, e vault.Entry) (*cached, error) 
 	if err != nil {
 		return nil, err
 	}
-	entries, err := transcript.Parse(a.Transcript)
+	return newCached(e, a.Transcript)
+}
+
+func newCached(e vault.Entry, data []byte) (*cached, error) {
+	entries, err := transcript.Parse(data)
 	if err != nil {
 		return nil, err
 	}
@@ -153,13 +161,51 @@ func fetch(ctx context.Context, st store.Store, e vault.Entry) (*cached, error) 
 	return &cached{Format: cacheFormat, Entry: e, Entries: entries}, nil
 }
 
+// Remember adds a session restored from archive a, saved under tok, to the
+// library in cacheDir, so it can be searched and read like the vault's own
+// sessions. A session restored from someone else's share token is in no
+// catalog the library pulls. A copy cached from the same save or a later
+// one is kept as it is.
+//
+// An archive names its own session id, and anyone can make one that names
+// another's. So a session cached under another token is never replaced
+// here, and one this adds is replaced by the next pull if the vault's
+// catalog holds that id under its own token.
+func Remember(cacheDir string, v *vault.Vault, tok token.Token, a *archive.Archive) error {
+	dir := filepath.Join(cacheDir, v.ID())
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	e := sesh.CatalogEntry(a, tok, "")
+	if data, err := os.ReadFile(cachePath(dir, e.ID())); err == nil {
+		var old cached
+		if json.Unmarshal(data, &old) == nil && old.Entry.Session != "" {
+			if old.Entry.Token != e.Token {
+				return fmt.Errorf("session %s is already in the library under another share token", e.ID())
+			}
+			if old.Format == cacheFormat && !e.SavedAt.After(old.Entry.SavedAt) {
+				return nil
+			}
+		}
+	}
+	c, err := newCached(e, a.Transcript)
+	if err != nil {
+		return err
+	}
+	return writeCached(dir, c)
+}
+
+func cachePath(dir, id string) string {
+	sum := sha256.Sum256([]byte(id))
+	return filepath.Join(dir, hex.EncodeToString(sum[:16])+".json")
+}
+
 func writeCached(dir string, c *cached) error {
 	data, err := json.Marshal(c)
 	if err != nil {
 		return err
 	}
-	sum := sha256.Sum256([]byte(c.Entry.ID()))
-	p := filepath.Join(dir, hex.EncodeToString(sum[:16])+".json")
+	p := cachePath(dir, c.Entry.ID())
 	tmp := p + ".tmp"
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err

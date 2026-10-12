@@ -6,31 +6,35 @@ Commands, settings and formats. For how to set up and use sesh, see the [README]
 
 | Command | Does |
 | --- | --- |
-| `sesh init [-store URL] [-key KEY]` | Creates a vault key, or uses `KEY` from another device, and records the storage URL |
-| `sesh key` | Prints the vault key |
+| `sesh init [-store URL] [-key KEY]` | Creates a vault key, or uses `KEY` from another device, and records the storage URL. Inside Claude Code it doesn't print the key; in a cloud session it refuses |
+| `sesh key` | Prints the vault key. Refuses inside Claude Code, whose transcript would keep it |
+| `sesh status` | Shows the vault, the storage URL with any credentials hidden, and the last hook run |
 | `sesh save [-transcript FILE] [-session ID] [-dir DIR]` | Saves a session and its working copy, and prints its share token. Inside Claude Code, the current session is the default |
 | `sesh sync [-q]` | Saves every local Claude Code session whose transcript changed since the last sync, conversation only |
 | `sesh watch [-every 1m]` | Runs `sesh sync` repeatedly |
-| `sesh restore [-dir DIR] [-budget BYTES] [-o FILE] TARGET` | Restores a session's working copy on a new branch and writes its conversation as a new Claude Code session; prints the `claude --resume` command |
+| `sesh restore [-dir DIR] [-budget BYTES] [-o FILE] TARGET` | Restores a session's working copy on a new branch and writes its conversation as a new Claude Code session; prints the `claude --resume` command. In a cloud session it prints the rendered history instead. Either way the session joins this device's library |
 | `sesh list [-n 20] [-offline]` | Lists sessions, most recently active first |
 | `sesh search [-n 10] [-offline] WORDS` | Searches every session's messages and titles |
 | `sesh show [-budget BYTES] [-offline] TARGET` | Prints a session's conversation |
 | `sesh mcp` | Runs the MCP server on stdin and stdout |
 | `sesh serve [-addr :8080] [-dir DIR]` | Runs a sesh server |
-| `sesh hook` | Handles a Claude Code hook event on stdin; the plugin runs it |
+| `sesh hook` | Handles a Claude Code hook event on stdin: `Stop` saves the session, and `UserPromptExpansion` runs a `/sesh` command. The plugin runs it |
 
 `TARGET` is a share token, a session id or a unique prefix of one, or words from the session's title. `-offline` uses this device's copy of the vault without checking the store.
 
-## Typed commands
+## The /sesh command
 
-With the plugin installed, these work as prompts in any Claude Code session. None of them makes a model call.
+With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Code session, and Claude shows what it printed, errors included. Each use is one model turn. Claude never runs it on its own, and nothing typed after `/sesh` reaches a shell.
 
-| Prompt | Does |
+| Command | Does |
 | --- | --- |
-| `sesh save` | Saves now and shows the share token |
-| `sesh restore TARGET` | Restores the working copy on a new branch and loads the conversation into this session |
-| `sesh search WORDS` | Shows matching sessions |
-| `sesh status` | Shows whether sesh is set up here |
+| `/sesh status` | Shows whether sesh is set up here |
+| `/sesh list` | Lists your sessions |
+| `/sesh search WORDS` | Shows matching sessions |
+| `/sesh save` | Saves now and shows the share token |
+| `/sesh restore TARGET` | Restores the working copy on a new branch. In a terminal session, prints a `claude --resume` command for the real turns; in a cloud session, Claude says where the session stopped from the end of its history, and the whole history (`SESH_BUDGET`, 100 KB by default) joins this session when that turn ends |
+
+`/sesh` alone shows the status. `TARGET` and `WORDS` are everything after the command word.
 
 ## MCP tools
 
@@ -60,7 +64,7 @@ With the plugin installed, these work as prompts in any Claude Code session. Non
 | `SESH_STORE` | Storage URL; overrides `config` |
 | `SESH_KEY` | Vault key; overrides `key` |
 | `SESH_HOME` | Replaces `~/.sesh` |
-| `SESH_BUDGET` | Size of a rendered history, in bytes (default 300000) |
+| `SESH_BUDGET` | Size of a rendered history, in bytes (default 100000) |
 | `SESH_BIN` | The plugin uses this sesh binary |
 | `SESH_VERSION` | The version the plugin installs: a tag, branch or commit (default `main`) |
 | `SESH_S3_PATH_STYLE` | Any value turns on path-style S3 addressing, for stores that need it |
@@ -126,7 +130,8 @@ A vault's owner is the first bearer to write in it. Bearers are stored as SHA-25
 
 | File | Contents |
 | --- | --- |
-| `plugin/hooks/hooks.json` | `UserPromptSubmit` and `Stop` hooks, both running `scripts/sesh hook` |
+| `plugin/hooks/hooks.json` | The `Stop` hook and the `/sesh` command's `UserPromptExpansion` hook, both running `scripts/sesh hook` |
+| `plugin/skills/sesh/SKILL.md` | The `/sesh` command |
 | `plugin/.mcp.json` | The MCP server |
-| `plugin/scripts/sesh` | Finds sesh (`$SESH_BIN`, a copy it installed, `PATH`, then `$GOBIN` or `~/go/bin`) or installs it with `go install`, once per `SESH_VERSION` |
+| `plugin/scripts/sesh` | Runs `$SESH_BIN`, else the copy it installed, else installs one with `go install`, once per `SESH_VERSION`. It never runs a `sesh` from `PATH` |
 | `.claude-plugin/marketplace.json` | Makes the repository a plugin marketplace |

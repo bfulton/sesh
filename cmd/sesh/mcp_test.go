@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/bfulton/sesh/internal/library"
 	"github.com/bfulton/sesh/internal/sesh"
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
@@ -83,5 +84,39 @@ func TestMCP(t *testing.T) {
 	}
 	if resps[5]["error"] == nil {
 		t.Error("unknown method should be a JSON-RPC error")
+	}
+}
+
+// A session a restore adds to the cache is visible at once, not only after
+// the next pull a minute later.
+func TestMCPSeesRestoredSession(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("SESH_HOME", home)
+	key, _ := token.New()
+	t.Setenv("SESH_KEY", key.String())
+	t.Setenv("SESH_STORE", "file://"+filepath.Join(home, "store"))
+	st := &store.Dir{Root: filepath.Join(home, "store")}
+	tp := filepath.Join(home, "theirs.jsonl")
+	os.WriteFile(tp, []byte(`{"type":"user","message":{"role":"user","content":"Someone else's session."}}
+`), 0o600)
+	saved, err := sesh.Save(ctx, sesh.SaveOptions{Store: st, SessionID: "theirs", TranscriptPath: tp, SkipWorktree: true, TokenDir: filepath.Join(home, "their-tokens")})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv := &mcpServer{}
+	if lib, err := srv.library(ctx); err != nil || len(lib.Entries) != 0 {
+		t.Fatalf("library before restore: %v, %d entries", err, len(lib.Entries))
+	}
+	a, err := sesh.Fetch(ctx, st, saved.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := library.Remember(filepath.Join(home, "cache"), &vault.Vault{Key: key}, saved.Token, a); err != nil {
+		t.Fatal(err)
+	}
+	if lib, err := srv.library(ctx); err != nil || len(lib.Find("theirs")) != 1 {
+		t.Fatalf("restored session not visible: %v", err)
 	}
 }

@@ -5,11 +5,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/bfulton/sesh/internal/library"
 	"github.com/bfulton/sesh/internal/sesh"
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
@@ -22,6 +24,10 @@ func cmdInit(args []string) error {
 	storeFlag := fs.String("store", "", "storage URL: file:///path, s3://bucket/prefix or https://sesh-server")
 	keyFlag := fs.String("key", "", "use this existing vault key (from another device)")
 	fs.Parse(args)
+	if inCloud() {
+		return errors.New("a cloud session's files don't outlast it, so a vault set up here would be lost. " +
+			"Run sesh init on your own device, then set SESH_KEY and SESH_STORE in the cloud environment's settings")
+	}
 
 	keyPath := filepath.Join(seshHome(), "key")
 	v, err := loadVault()
@@ -66,6 +72,17 @@ func cmdInit(args []string) error {
 	if err := writeConfig(cfg); err != nil {
 		return err
 	}
+	if inClaude() {
+		where := keyPath
+		if os.Getenv("SESH_KEY") != "" {
+			where = "SESH_KEY"
+		}
+		fmt.Printf(`Vault set up. Storage: %s
+The vault key is in %s. It isn't printed here: this session's transcript
+would keep it. To set up another device, run sesh key in your own terminal.
+`, redactURL(cfg["store"]), where)
+		return nil
+	}
 	fmt.Printf(`Vault key:
 %s
 
@@ -79,11 +96,19 @@ In Claude Code cloud:   set SESH_KEY and SESH_STORE in your environment's variab
 }
 
 func cmdKey([]string) error {
+	if inClaude() {
+		return errors.New("not printing the vault key inside a Claude Code session: its transcript would keep it. Run sesh key in your own terminal")
+	}
 	v, err := requireVault()
 	if err != nil {
 		return err
 	}
 	fmt.Println(v.Key)
+	return nil
+}
+
+func cmdStatus([]string) error {
+	fmt.Print(statusText())
 	return nil
 }
 
@@ -109,6 +134,12 @@ func cmdSave(args []string) error {
 	if *sid == "" {
 		*sid = strings.TrimSuffix(filepath.Base(*tpath), ".jsonl")
 	}
+	return saveSession(os.Stdout, os.Stderr, *sid, *tpath, *dir)
+}
+
+// saveSession saves a session, writing a summary to ew and its share token
+// to w.
+func saveSession(w, ew io.Writer, sid, tpath, dir string) error {
 	st, err := openStore()
 	if err != nil {
 		return err
@@ -118,14 +149,14 @@ func cmdSave(args []string) error {
 		return err
 	}
 	res, err := sesh.Save(context.Background(), sesh.SaveOptions{
-		Store: st, SessionID: *sid, TranscriptPath: *tpath, Dir: *dir,
+		Store: st, SessionID: sid, TranscriptPath: tpath, Dir: dir,
 		Vault: v, TokenDir: tokenDir(), Host: hostLabel(),
 	})
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(os.Stderr, saveSummary(res))
-	fmt.Println(res.Token)
+	fmt.Fprintln(ew, saveSummary(res))
+	fmt.Fprintln(w, res.Token)
 	return nil
 }
 
@@ -175,34 +206,79 @@ func cmdRestore(args []string) error {
 	if fs.NArg() != 1 {
 		usage()
 	}
-	st, err := openStore()
+	return restoreSession(os.Stdout, os.Stderr, fs.Arg(0), *dir, *size, *out)
+}
+
+// restoreSession restores the session target names into dir, writing a
+// summary to ew and to w what continues it: in a cloud session the rendered
+// history, elsewhere the claude --resume command. With out, it also writes
+// the rendered history to that file.
+func restoreSession(w, ew io.Writer, target, dir string, size int, out string) error {
+	res, readable, err := restoreRun(target, dir, size)
 	if err != nil {
 		return err
 	}
-	ctx := context.Background()
-	tok, err := resolveToken(ctx, st, fs.Arg(0))
-	if err != nil {
-		return err
-	}
-	// From a shell there is no live session to load history into, so the
-	// history becomes a native session that claude --resume continues.
-	res, err := sesh.Restore(ctx, sesh.RestoreOptions{
-		Store: st, Token: tok, Dir: *dir, Budget: *size, Native: true, Home: claudeHome(),
-	})
-	if err != nil {
-		return err
-	}
-	fmt.Fprintln(os.Stderr, restoreSummary(res))
-	if *out != "" {
-		if err := os.WriteFile(*out, []byte(res.Rendered), 0o600); err != nil {
+	fmt.Fprintln(ew, restoreSummary(res))
+	if out != "" {
+		if err := os.WriteFile(out, []byte(res.Rendered), 0o600); err != nil {
 			return err
 		}
+	}
+	if inCloud() {
+		fmt.Fprint(w, res.Rendered)
+		if readable {
+			fmt.Fprint(w, libraryNote(res))
+		}
+		return nil
 	}
 	if res.NativeSession == "" {
 		return fmt.Errorf("could not write a native session: %s", res.NativeErr)
 	}
-	fmt.Printf("claude --resume %s\n", res.NativeSession)
+	fmt.Fprintf(w, "claude --resume %s\n", res.NativeSession)
 	return nil
+}
+
+// restoreRun restores the session target names into dir, rendering its
+// history within size bytes. It reports whether sesh's search tools can read
+// the whole session.
+func restoreRun(target, dir string, size int) (*sesh.RestoreResult, bool, error) {
+	st, err := openStore()
+	if err != nil {
+		return nil, false, err
+	}
+	ctx := context.Background()
+	tok, err := resolveToken(ctx, st, target)
+	if err != nil {
+		return nil, false, err
+	}
+	// Locally the history becomes a native session that claude --resume
+	// continues with its real turns. A cloud session's transcript lives on
+	// the provider's servers, where a native session file would never be
+	// read, so there the history goes to the model instead.
+	res, err := sesh.Restore(ctx, sesh.RestoreOptions{
+		Store: st, Token: tok, Dir: dir, Budget: size, Native: !inCloud(), Home: claudeHome(),
+	})
+	if err != nil {
+		return nil, false, err
+	}
+	return res, remember(tok, res), nil
+}
+
+// libraryNote tells the model where to read what a rendered history left out.
+func libraryNote(res *sesh.RestoreResult) string {
+	return fmt.Sprintf("\n[sesh] The whole session is in sesh's library as session %s: "+
+		"search_messages and read_messages can read what was trimmed or left out above.\n", res.Manifest.Session)
+}
+
+// remember adds a restored session to this device's library, so sesh's
+// search tools can read what its rendered history trimmed or left out. It
+// reports whether they can.
+func remember(tok token.Token, res *sesh.RestoreResult) bool {
+	v, err := loadVault()
+	if err != nil || v == nil {
+		return false
+	}
+	return library.Remember(filepath.Join(seshHome(), "cache"), v, tok, res.Archive) == nil
 }
 
 func saveSummary(r *sesh.SaveResult) string {

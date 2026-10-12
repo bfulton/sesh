@@ -2,6 +2,7 @@
 // continue any of them anywhere and search across all of them.
 //
 //	sesh init                  create your vault key and set up storage
+//	sesh status                show the vault, storage and last hook run
 //	sesh save                  save this session; print its share token
 //	sesh restore <token|id>    continue a saved session here
 //	sesh sync / watch          save every local session that changed
@@ -21,6 +22,7 @@ const usageText = `sesh keeps your agent sessions in storage you own.
 Set up:
   sesh init [-store URL]        create a vault key and choose storage
   sesh key                      print your vault key (for other devices)
+  sesh status                   show the vault, storage and last hook run
 
 Keep:
   sesh save                     save the current session; print its share token
@@ -40,31 +42,34 @@ Remember:
 Run a server:
   sesh serve [-addr :8080] [-dir path]   storage that only ever sees ciphertext
 
-In Claude Code, the plugin saves each session as it goes and accepts
-"sesh save", "sesh restore", "sesh search" and "sesh status" typed as prompts.
+In Claude Code, the plugin saves each session after every turn, and
+/sesh <command> runs these commands from any session.
 
 Storage is a URL: file:///path, s3://bucket/prefix, or https://your-sesh-server.
 Settings come from ~/.sesh/config, overridden by SESH_STORE and SESH_KEY.`
+
+// subcommands maps each subcommand to its function.
+var subcommands = map[string]func([]string) error{
+	"init":    cmdInit,
+	"key":     cmdKey,
+	"status":  cmdStatus,
+	"save":    cmdSave,
+	"restore": cmdRestore,
+	"sync":    cmdSync,
+	"watch":   cmdWatch,
+	"list":    cmdList,
+	"search":  cmdSearch,
+	"show":    cmdShow,
+	"mcp":     cmdMCP,
+	"serve":   cmdServe,
+	"hook":    func([]string) error { return cmdHook(os.Stdin, os.Stdout) },
+}
 
 func main() {
 	if len(os.Args) < 2 {
 		usage()
 	}
-	cmds := map[string]func([]string) error{
-		"init":    cmdInit,
-		"key":     cmdKey,
-		"save":    cmdSave,
-		"restore": cmdRestore,
-		"sync":    cmdSync,
-		"watch":   cmdWatch,
-		"list":    cmdList,
-		"search":  cmdSearch,
-		"show":    cmdShow,
-		"mcp":     cmdMCP,
-		"serve":   cmdServe,
-		"hook":    func([]string) error { return cmdHook(os.Stdin, os.Stdout) },
-	}
-	run, ok := cmds[os.Args[1]]
+	run, ok := subcommands[os.Args[1]]
 	if !ok {
 		usage()
 	}
