@@ -411,3 +411,45 @@ func TestCountsEveryPlaceholder(t *testing.T) {
 		t.Errorf("%d placeholders, Redacted = %v; want 2 and 2", got, p.Redacted)
 	}
 }
+
+func TestLongEncodedKeyAcrossChunks(t *testing.T) {
+	// A key whose base64 form, unwrapped, is longer than a chunk and its
+	// overlap together, such as a large PGP key in a Kubernetes secret.
+	f := newFakes()
+	var key strings.Builder
+	key.WriteString("-----BEGIN PGP PRIVATE KEY BLOCK-----\n\n")
+	for key.Len() < 6*overlap {
+		key.WriteString(f.chars(alnum+"+/", 64) + "\n")
+	}
+	key.WriteString("-----END PGP PRIVATE KEY BLOCK-----\n")
+	blob := base64.StdEncoding.EncodeToString([]byte(key.String()))
+	var b strings.Builder
+	for b.Len() < chunkSize-overlap/2 {
+		b.WriteString("ordinary output\n")
+	}
+	b.WriteString("  tls.key: " + blob + "\nafter\n")
+	out, err := newPass(t, nil, time.Time{}).Text("f", []byte(b.String()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), blob[len(blob)/2:len(blob)/2+64]) {
+		t.Error("a long encoded key across chunks wasn't redacted")
+	}
+	if !strings.HasSuffix(string(out), "\nafter\n") {
+		t.Error("text after the key changed")
+	}
+}
+
+func TestImageDataNotScanned(t *testing.T) {
+	// Scanning stops at the deadline; a base64 image's data isn't scanned
+	// at all, so nothing of it is left.
+	p := newPass(t, nil, time.Now().Add(-time.Second))
+	data := strings.Repeat("iVBORw0KGgoAAAANSUhEUgAA", 4000)
+	n := 0
+	if _, err := p.walk(map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": data}}, "", &n); err != nil {
+		t.Fatal(err)
+	}
+	if p.left >= int64(len(data)) {
+		t.Errorf("%d bytes left: the image data was scanned", p.left)
+	}
+}

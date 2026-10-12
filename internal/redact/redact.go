@@ -91,7 +91,7 @@ func (r *Redactor) scan(ctx context.Context, s string, wc Windows) ([]target, er
 	var out []target
 	for a := 0; a < len(s); {
 		w := windowStart(s, a)
-		b := blockEnd(s, w, chunkEnd(s, a))
+		b := blockEnd(s, w, runEnd(s, chunkEnd(s, a)))
 		window := s[w:b]
 		a = b
 		if wc != nil && wc.Skip(window) {
@@ -215,6 +215,33 @@ func blockEnd(s string, w, b int) int {
 		return end + k + 1
 	}
 	return len(s)
+}
+
+// maxRun bounds how far a chunk grows to hold a whole run of encoded text.
+// Scanning one run costs more than linearly: 0.1 s for 64 KB, 0.7 s for
+// 256 KB, 6 s for 1 MB. 256 KB holds the base64 of a 190 KB key.
+const maxRun = 256 << 10
+
+// runEnd moves a chunk end b that falls inside a run of encoded text, such
+// as base64 or hex, to the run's end, if that is within maxRun. gitleaks
+// decodes each window's runs separately, so a secret encoded in a run cut
+// in two would be whole in neither half.
+func runEnd(s string, b int) int {
+	if b == 0 || b >= len(s) || !encoded(s[b-1]) {
+		return b
+	}
+	for i := b; i < min(len(s), b+maxRun); i++ {
+		if !encoded(s[i]) {
+			return i
+		}
+	}
+	return b
+}
+
+// encoded reports whether c can be part of base64, hex or percent encoding.
+func encoded(c byte) bool {
+	return 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
+		c == '+' || c == '/' || c == '=' || c == '-' || c == '_' || c == '%'
 }
 
 // windowStart returns where the window for the chunk at a starts: up to

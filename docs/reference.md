@@ -83,7 +83,7 @@ Before a save is encrypted, sesh replaces each secret it finds with a placeholde
 
 | Part of a save | Scanned |
 | --- | --- |
-| Transcript and subagent transcripts | Every JSON string, decoded: object keys, and values after their key |
+| Transcript and subagent transcripts | Every JSON string, decoded: object keys, and values after their key. Base64 image and document data, which is compressed binary, is skipped |
 | Large tool outputs and memory files | As text; files that aren't UTF-8 are skipped |
 | Working copy | Lines the patches add. Lines a patch keeps or removes are in the base commit, which a restore needs anyway, and changing them would stop the patch from applying. Binary patches are skipped |
 

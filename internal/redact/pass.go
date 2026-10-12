@@ -197,6 +197,16 @@ func (w stringWindows) Skip(s string) bool {
 
 func (stringWindows) Clean(string) {}
 
+// binarySource reports whether a JSON object is the source of an image or
+// document, such as {"type":"base64","media_type":"image/png","data":...}.
+// Its data is compressed binary, in which no rule finds text, and scanning
+// it costs: a run of encoded text is scanned whole.
+func binarySource(m map[string]any) bool {
+	t, _ := m["type"].(string)
+	_, typed := m["media_type"].(string)
+	return t == "base64" && typed
+}
+
 // walk redacts the strings in a decoded JSON value, object keys included.
 // key is the object key the value is under, if any.
 func (p *Pass) walk(v any, key string, n *int) (any, error) {
@@ -227,6 +237,9 @@ func (p *Pass) walk(v any, key string, n *int) (any, error) {
 		}
 		sort.Strings(keys)
 		for _, k := range keys {
+			if k == "data" && binarySource(x) {
+				continue
+			}
 			y, err := p.walk(x[k], k, n)
 			if err != nil {
 				return nil, err
