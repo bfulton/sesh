@@ -90,8 +90,8 @@ type Windows interface {
 func (r *Redactor) scan(ctx context.Context, s string, wc Windows) ([]target, error) {
 	var out []target
 	for a := 0; a < len(s); {
-		b := chunkEnd(s, a)
 		w := windowStart(s, a)
+		b := blockEnd(s, w, chunkEnd(s, a))
 		window := s[w:b]
 		a = b
 		if wc != nil && wc.Skip(window) {
@@ -191,6 +191,32 @@ func chunkEnd(s string, a int) int {
 	return runeStart(s, b)
 }
 
+// maxBlock bounds how far a chunk grows to hold a whole PEM block.
+const maxBlock = 1 << 20
+
+// blockEnd moves a chunk end b past the end of a PEM block, such as a
+// private key, that begins in the window from w but doesn't end in it.
+// gitleaks' private-key rule has no length limit, and a key longer than the
+// overlap, such as a PGP key with subkeys, would otherwise be whole in no
+// window.
+func blockEnd(s string, w, b int) int {
+	win := strings.ToLower(s[w:b])
+	i := strings.LastIndex(win, "-----begin")
+	if i < 0 || strings.Contains(win[i:], "-----end") {
+		return b
+	}
+	rest := strings.ToLower(s[b:min(len(s), b+maxBlock)])
+	j := strings.Index(rest, "-----end")
+	if j < 0 {
+		return b
+	}
+	end := b + j
+	if k := strings.IndexByte(s[end:], '\n'); k >= 0 {
+		return end + k + 1
+	}
+	return len(s)
+}
+
 // windowStart returns where the window for the chunk at a starts: up to
 // overlap bytes earlier, at a line start if there is one in reach.
 func windowStart(s string, a int) int {
@@ -219,9 +245,10 @@ func Placeholder(rule, secret string) string {
 	return "[REDACTED:" + rule + "]" + strings.Repeat("\n", strings.Count(secret, "\n"))
 }
 
-// apply replaces targets found in prefix+s within s. Spans that reach into
-// prefix are clipped to s.
-func apply(prefix, s string, ts []target) string {
+// apply replaces targets found in prefix+s within s, and returns how many
+// placeholders it wrote. Spans that reach into prefix are clipped to s.
+func apply(prefix, s string, ts []target) (string, int) {
+	n := 0
 	var spans, literals []target
 	for _, t := range ts {
 		if t.secret != "" {
@@ -243,6 +270,7 @@ func apply(prefix, s string, ts []target) string {
 		}
 		s = s[:t.start] + Placeholder(t.rule, s[t.start:t.end]) + s[t.end:]
 		limit = t.start
+		n++
 	}
 	// Longest first, so a secret that contains another goes whole; of rules
 	// that found the same secret, a specific one names it.
@@ -254,9 +282,12 @@ func apply(prefix, s string, ts []target) string {
 		return a.rule != genericRule && b.rule == genericRule
 	})
 	for _, t := range literals {
-		s = strings.ReplaceAll(s, t.secret, Placeholder(t.rule, t.secret))
+		if k := strings.Count(s, t.secret); k > 0 {
+			s = strings.ReplaceAll(s, t.secret, Placeholder(t.rule, t.secret))
+			n += k
+		}
 	}
-	return s
+	return s, n
 }
 
 // maxRounds bounds how often redacted text is scanned again. Replacing one
@@ -265,7 +296,7 @@ const maxRounds = 3
 
 // redact returns s with its secrets replaced, scanning prefix+s so that a
 // rule can see the context prefix gives, such as a JSON key. It returns how
-// many secrets it replaced.
+// many placeholders it wrote.
 func (r *Redactor) redact(ctx context.Context, prefix, s string, wc Windows) (string, int, error) {
 	n := 0
 	for round := 0; ; round++ {
@@ -276,12 +307,12 @@ func (r *Redactor) redact(ctx context.Context, prefix, s string, wc Windows) (st
 		if len(ts) == 0 {
 			return s, n, nil
 		}
-		next := apply(prefix, s, ts)
+		next, k := apply(prefix, s, ts)
 		if next == s {
 			// What gitleaks found is in prefix, or is a placeholder.
 			return s, n, nil
 		}
-		n += countDistinct(ts)
+		n += k
 		s = next
 		if round == maxRounds-1 {
 			break
@@ -311,20 +342,10 @@ func (r *Redactor) redact(ctx context.Context, prefix, s string, wc Windows) (st
 		}
 		lines = append(lines, target{rule: t.rule, start: start, end: end})
 	}
-	return apply(prefix, s, lines), n + len(lines), nil
+	s, k := apply(prefix, s, lines)
+	return s, n + k, nil
 }
 
 // genericRule finds secrets by the words around them, so other rules often
 // find the same secret too.
 const genericRule = "generic-api-key"
-
-// countDistinct counts the secrets in ts; rules that found the same one
-// count once.
-func countDistinct(ts []target) int {
-	seen := map[target]bool{}
-	for _, t := range ts {
-		t.rule = ""
-		seen[t] = true
-	}
-	return len(seen)
-}

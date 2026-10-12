@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,7 +37,9 @@ func Take(dir string) (*Capture, error) {
 	if c.Branch, err = git(root, nil, "rev-parse", "--abbrev-ref", "HEAD"); err != nil {
 		return nil, fmt.Errorf("repository has no commits: %w", err)
 	}
-	c.Repo, _ = git(root, nil, "remote", "get-url", remoteName(root))
+	if u, err := git(root, nil, "remote", "get-url", remoteName(root)); err == nil {
+		c.Repo = withoutCredentials(u)
+	}
 	if c.Base, c.Pushed, err = base(root); err != nil {
 		return nil, err
 	}
@@ -203,4 +206,16 @@ func gitBytes(dir string, env []string, args ...string) ([]byte, error) {
 		return nil, fmt.Errorf("git %s: %v: %s", strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
 	}
 	return out, nil
+}
+
+// withoutCredentials drops the user information from a remote URL, such as
+// a token in https://x-access-token:TOKEN@github.com/o/r: the URL is only
+// shown, and saves are shared.
+func withoutCredentials(remote string) string {
+	u, err := url.Parse(remote)
+	if err != nil || u.Scheme == "" || u.User == nil {
+		return remote // such as scp-style git@host:path, which holds no password
+	}
+	u.User = nil
+	return u.String()
 }

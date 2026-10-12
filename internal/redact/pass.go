@@ -24,7 +24,7 @@ type Pass struct {
 	ctx      context.Context
 	deadline time.Time
 
-	// Redacted counts the secrets replaced in each file, by name.
+	// Redacted counts the placeholders written in each file, by name.
 	Redacted map[string]int
 
 	scanned, left int64
@@ -162,13 +162,15 @@ func (p *Pass) jsonLine(line []byte) ([]byte, int, error) {
 		return []byte(out), n, err
 	}
 	p.scanned += int64(len(line))
-	n := 0
+	left, n := p.left, 0
 	v, err := p.walk(v, "", &n)
 	if err != nil {
 		return nil, 0, err
 	}
 	if n == 0 {
-		p.cache.add(h)
+		if p.left == left { // scanned whole
+			p.cache.add(h)
+		}
 		return line, 0, nil
 	}
 	var buf bytes.Buffer
@@ -180,8 +182,23 @@ func (p *Pass) jsonLine(line []byte) ([]byte, int, error) {
 	return bytes.TrimRight(buf.Bytes(), "\n"), n, nil
 }
 
-// walk redacts the strings in a decoded JSON value. key is the object key
-// the value is under, if any.
+// stringWindows checks the deadline between the windows of a decoded JSON
+// string. It caches nothing: the line's hash is cached once all of it is
+// clean.
+type stringWindows struct{ p *Pass }
+
+func (w stringWindows) Skip(s string) bool {
+	if w.p.outOfTime() {
+		w.p.left += int64(len(s))
+		return true
+	}
+	return false
+}
+
+func (stringWindows) Clean(string) {}
+
+// walk redacts the strings in a decoded JSON value, object keys included.
+// key is the object key the value is under, if any.
 func (p *Pass) walk(v any, key string, n *int) (any, error) {
 	switch x := v.(type) {
 	case string:
@@ -192,7 +209,7 @@ func (p *Pass) walk(v any, key string, n *int) (any, error) {
 		if key != "" {
 			prefix = key + ": "
 		}
-		out, k, err := p.r.redact(p.ctx, prefix, x, nil)
+		out, k, err := p.r.redact(p.ctx, prefix, x, stringWindows{p})
 		*n += k
 		return out, err
 	case []any:
@@ -214,7 +231,23 @@ func (p *Pass) walk(v any, key string, n *int) (any, error) {
 			if err != nil {
 				return nil, err
 			}
-			x[k] = y
+			nk, kn, err := p.r.redact(p.ctx, "", k, stringWindows{p})
+			if err != nil {
+				return nil, err
+			}
+			if kn == 0 {
+				x[k] = y
+				continue
+			}
+			*n += kn
+			delete(x, k)
+			for i := 2; ; i++ {
+				if _, taken := x[nk]; !taken {
+					break
+				}
+				nk = strings.TrimSuffix(nk, fmt.Sprintf(" %d", i-1)) + fmt.Sprintf(" %d", i)
+			}
+			x[nk] = y
 		}
 	}
 	return v, nil

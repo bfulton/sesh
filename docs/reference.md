@@ -83,11 +83,13 @@ Before a save is encrypted, sesh replaces each secret it finds with a placeholde
 
 | Part of a save | Scanned |
 | --- | --- |
-| Transcript and subagent transcripts | Every JSON string, decoded, after its key |
+| Transcript and subagent transcripts | Every JSON string, decoded: object keys, and values after their key |
 | Large tool outputs and memory files | As text; files that aren't UTF-8 are skipped |
 | Working copy | Lines the patches add. Lines a patch keeps or removes are in the base commit, which a restore needs anyway, and changing them would stop the patch from applying. Binary patches are skipped |
 
-The manifest records how many secrets were replaced in each file. `sesh save` and the hook say how many; `sesh restore` names the working-copy files that hold placeholders, since those files are restored with the placeholders instead of the secrets.
+The manifest records how many placeholders each file got. `sesh save` and the hook say how many; `sesh restore` names the working-copy files that hold placeholders, since those files are restored with the placeholders instead of the secrets.
+
+A save also never keeps credentials in the remote URL it records, such as a token in `https://x-access-token:TOKEN@github.com/…`, whatever the setting.
 
 Rules can match text that isn't a secret, such as a test fixture with a private key. To save everything as it is, set `redact=off` in `config` or `SESH_REDACT=off`.
 

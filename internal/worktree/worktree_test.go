@@ -267,3 +267,18 @@ func keys(m map[string][]byte) []string {
 	}
 	return ks
 }
+
+func TestWithoutCredentials(t *testing.T) {
+	for in, want := range map[string]string{
+		"https://x-access-token:abc123@github.com/o/r.git": "https://github.com/o/r.git",
+		"https://abc123@github.com/o/r":                    "https://github.com/o/r",
+		"ssh://git@host:22/o/r.git":                        "ssh://host:22/o/r.git",
+		"https://github.com/o/r.git":                       "https://github.com/o/r.git",
+		"git@github.com:o/r.git":                           "git@github.com:o/r.git",
+		"/srv/git/r.git":                                   "/srv/git/r.git",
+	} {
+		if got := withoutCredentials(in); got != want {
+			t.Errorf("withoutCredentials(%q) = %q, want %q", in, got, want)
+		}
+	}
+}

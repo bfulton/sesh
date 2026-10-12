@@ -61,7 +61,7 @@ type SaveResult struct {
 	Worktree string // why the working copy was not captured, if it wasn't
 	Pushed   bool   // whether the base commit is on a remote
 	Skipped  int    // session files left out to keep the save under maxSessionFiles
-	Redacted int    // secrets replaced by placeholders
+	Redacted int    // placeholders that replaced secrets
 	Entry    *vault.Entry
 }
 

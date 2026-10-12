@@ -332,3 +332,82 @@ func TestSpan(t *testing.T) {
 		}
 	}
 }
+
+func TestJSONKeysRedacted(t *testing.T) {
+	f := newFakes()
+	a, b := f.github(), f.github()
+	line, _ := json.Marshal(map[string]any{"input": map[string]any{a: "one", b: "two", "plain": "three"}})
+	p := newPass(t, nil, time.Time{})
+	out, err := p.JSONL("t", line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), a) || strings.Contains(string(out), b) {
+		t.Fatalf("a secret key is still there: %s", out)
+	}
+	var v struct{ Input map[string]string }
+	if err := json.Unmarshal(out, &v); err != nil {
+		t.Fatal(err)
+	}
+	// Both keys become placeholders without one value overwriting the other.
+	if len(v.Input) != 3 || v.Input["plain"] != "three" || p.Redacted["t"] != 2 {
+		t.Errorf("input = %v, Redacted = %v", v.Input, p.Redacted)
+	}
+}
+
+func TestLongKeyAcrossChunks(t *testing.T) {
+	// A PGP private key with subkeys runs past the 8 KB overlap.
+	f := newFakes()
+	var key strings.Builder
+	key.WriteString("-----BEGIN PGP PRIVATE KEY BLOCK-----\n\n")
+	for key.Len() < 3*overlap {
+		key.WriteString(f.chars(alnum+"+/", 64) + "\n")
+	}
+	key.WriteString("-----END PGP PRIVATE KEY BLOCK-----")
+	var b strings.Builder
+	for b.Len() < chunkSize-overlap/2 {
+		b.WriteString("ordinary output\n")
+	}
+	b.WriteString(key.String() + "\nafter\n")
+	in := b.String()
+	if strings.Index(in, "-----BEGIN") > chunkSize || strings.Index(in, "-----END")-strings.Index(in, "-----BEGIN") < overlap+chunkSize/2 {
+		t.Fatal("the key doesn't start in the first chunk and outrun the overlap")
+	}
+	p := newPass(t, nil, time.Time{})
+	out, err := p.Text("f", []byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), key.String()[100:200]) || !strings.Contains(string(out), "[REDACTED:private-key]") {
+		t.Error("a key longer than the overlap, across chunks, wasn't redacted")
+	}
+	if !strings.HasSuffix(string(out), "\nafter\n") || strings.Count(string(out), "\n") != strings.Count(in, "\n") {
+		t.Error("text around the key changed")
+	}
+}
+
+func TestDeadlineInsideJSONString(t *testing.T) {
+	// The deadline is checked between the windows of one long string, not
+	// only between lines.
+	p := newPass(t, nil, time.Now().Add(-time.Second))
+	long := strings.Repeat("output line\n", 5000)
+	n := 0
+	if _, err := p.walk(map[string]any{"text": long}, "", &n); err != nil {
+		t.Fatal(err)
+	}
+	if p.left < int64(len(long)) {
+		t.Errorf("%d bytes left after the deadline, want the whole string's %d", p.left, len(long))
+	}
+}
+
+func TestCountsEveryPlaceholder(t *testing.T) {
+	gh := newFakes().github()
+	p := newPass(t, nil, time.Time{})
+	out, err := p.Text("f", []byte("first "+gh+"\nagain "+gh+"\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Count(string(out), "[REDACTED:"); got != 2 || p.Redacted["f"] != 2 {
+		t.Errorf("%d placeholders, Redacted = %v; want 2 and 2", got, p.Redacted)
+	}
+}

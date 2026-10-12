@@ -43,7 +43,7 @@ type Manifest struct {
 	SessionDir string   `json:"session_dir,omitempty"`
 	Files      []string `json:"files,omitempty"`
 
-	// Redacted counts the secrets replaced by placeholders before saving,
+	// Redacted counts the placeholders that replaced secrets before saving,
 	// by archive file name, such as transcript.jsonl or PatchName(path).
 	Redacted map[string]int `json:"redacted,omitempty"`
 }
