@@ -42,6 +42,10 @@ type Manifest struct {
 	// each at session/<path>.
 	SessionDir string   `json:"session_dir,omitempty"`
 	Files      []string `json:"files,omitempty"`
+
+	// Redacted counts the secrets replaced by placeholders before saving,
+	// by archive file name, such as transcript.jsonl or PatchName(path).
+	Redacted map[string]int `json:"redacted,omitempty"`
 }
 
 // Names of the files inside an archive.
@@ -55,6 +59,12 @@ const (
 
 // PatchName returns the archive file name holding the patch for a repo path.
 func PatchName(p string) string { return patchDir + p + ".patch" }
+
+// MemoryName returns the archive file name holding a memory file.
+func MemoryName(p string) string { return memoryDir + p }
+
+// FileName returns the archive file name holding a session file.
+func FileName(p string) string { return filesDir + p }
 
 // Archive is a saved session in memory.
 type Archive struct {
@@ -155,12 +165,12 @@ func pack(a *Archive) ([]byte, error) {
 		}
 	}
 	for _, p := range m.Memory {
-		if err := add(memoryDir+p, a.Memory[p]); err != nil {
+		if err := add(MemoryName(p), a.Memory[p]); err != nil {
 			return nil, err
 		}
 	}
 	for _, p := range m.Files {
-		if err := add(filesDir+p, a.Files[p]); err != nil {
+		if err := add(FileName(p), a.Files[p]); err != nil {
 			return nil, err
 		}
 	}

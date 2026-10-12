@@ -12,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/bfulton/sesh/internal/redact"
 	"github.com/bfulton/sesh/internal/sesh"
 	"github.com/bfulton/sesh/internal/transcript"
 )
@@ -97,6 +98,10 @@ const (
 // plugin:skill, however they are typed.
 const skillName = "sesh:sesh"
 
+// skillScanBudget limits the time /sesh save spends scanning for secrets,
+// within the 180 s Claude Code gives its hook.
+const skillScanBudget = 2 * time.Minute
+
 // hookSkill runs the /sesh command in ev and returns its name and output,
 // errors included. The command arrives as the hook's command_args, data
 // rather than a shell command line, so nothing typed or pasted after /sesh
@@ -124,7 +129,7 @@ func hookSkill(ev hookInput) (cmd, output string) {
 		if _, statErr := os.Stat(ev.TranscriptPath); statErr != nil {
 			err = errors.New("nothing to save yet: this session has no finished turns")
 		} else {
-			err = saveSession(&b, &b, ev.SessionID, ev.TranscriptPath, ev.Cwd)
+			err = saveSession(&b, &b, ev.SessionID, ev.TranscriptPath, ev.Cwd, skillScanBudget)
 		}
 	case "restore":
 		if rest == "" {
@@ -208,6 +213,12 @@ func takePending(sessionID string) (string, bool) {
 	return string(data), true
 }
 
+// hookScanBudget limits the time a hook's save spends scanning for secrets,
+// within its five minutes. Scanning a long session for the first time can
+// take longer; the scan cache keeps what was scanned, so the next turn's save
+// carries on, instead of starting over when the context runs out.
+const hookScanBudget = 3 * time.Minute
+
 // hookKeep saves the session after a turn, if a vault and store are set up.
 func hookKeep(ev hookInput) string {
 	v, err := loadVault()
@@ -226,7 +237,12 @@ func hookKeep(ev hookInput) string {
 	res, err := sesh.Save(ctx, sesh.SaveOptions{
 		Store: st, SessionID: ev.SessionID, TranscriptPath: ev.TranscriptPath, Dir: ev.Cwd,
 		Vault: v, Host: hostLabel(),
+		KeepSecrets: keepSecrets(), ScanCache: scanCache(ev.SessionID), ScanBudget: hookScanBudget,
 	})
+	var inc *redact.Incomplete
+	if errors.As(err, &inc) {
+		return inc.Error()
+	}
 	if err != nil {
 		return "error: " + err.Error()
 	}
@@ -250,6 +266,11 @@ func statusText() string {
 		fmt.Fprintf(&b, "store: %s\n", redactURL(u))
 	} else {
 		b.WriteString("store: none (run sesh init, or set SESH_STORE)\n")
+	}
+	if keepSecrets() {
+		b.WriteString("redaction: off (redact=off)\n")
+	} else {
+		b.WriteString("redaction: on\n")
 	}
 	if data, err := os.ReadFile(filepath.Join(seshHome(), "hook-status.json")); err == nil {
 		fmt.Fprintf(&b, "last hook run: %s\n", strings.TrimSpace(string(data)))

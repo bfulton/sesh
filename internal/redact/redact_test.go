@@ -1,0 +1,334 @@
+package redact
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"math/rand"
+	"path/filepath"
+	"strings"
+	"testing"
+	"time"
+)
+
+// Fake secrets are made at run time, so none sits in the source for a
+// scanner to flag; a fixed seed keeps tests repeatable.
+type fakes struct{ r *rand.Rand }
+
+func newFakes() fakes { return fakes{rand.New(rand.NewSource(7))} }
+
+func (f fakes) chars(set string, n int) string {
+	b := make([]byte, n)
+	for i := range b {
+		b[i] = set[f.r.Intn(len(set))]
+	}
+	return string(b)
+}
+
+const alnum = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+
+func (f fakes) github() string { return "ghp_" + f.chars(alnum, 36) }
+func (f fakes) aws() string    { return "AKIA" + f.chars("ABCDEFGHIJKLMNOPQRSTUVWXYZ234567", 16) }
+func (f fakes) privateKey() string {
+	var b strings.Builder
+	b.WriteString("-----BEGIN RSA PRIVATE KEY-----\n")
+	for i := 0; i < 25; i++ {
+		b.WriteString(f.chars(alnum+"+/", 64) + "\n")
+	}
+	b.WriteString("-----END RSA PRIVATE KEY-----")
+	return b.String()
+}
+
+func newPass(t *testing.T, c *Cache, deadline time.Time) *Pass {
+	t.Helper()
+	r, err := New()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return NewPass(context.Background(), r, c, deadline)
+}
+
+func TestTextRedactsSecrets(t *testing.T) {
+	f := newFakes()
+	gh, aws, key := f.github(), f.aws(), f.privateKey()
+	in := "notes\nexport GITHUB_TOKEN=" + gh + "\naws_access_key_id = " + aws + "\n" + key + "\ndone\n"
+	p := newPass(t, nil, time.Time{})
+	out, err := p.Text("memory/notes.md", []byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	for name, secret := range map[string]string{"github": gh, "aws": aws, "private key": key[40:100]} {
+		if strings.Contains(s, secret) {
+			t.Errorf("the %s secret is still there", name)
+		}
+	}
+	for _, rule := range []string{"github-pat", "aws-access-token", "private-key"} {
+		if !strings.Contains(s, "[REDACTED:"+rule+"]") {
+			t.Errorf("no %s placeholder in:\n%s", rule, s)
+		}
+	}
+	if strings.Count(s, "\n") != strings.Count(in, "\n") {
+		t.Errorf("line count changed: %d to %d", strings.Count(in, "\n"), strings.Count(s, "\n"))
+	}
+	if !strings.HasPrefix(s, "notes\n") || !strings.HasSuffix(s, "\ndone\n") {
+		t.Errorf("text around the secrets changed:\n%s", s)
+	}
+	if p.Redacted["memory/notes.md"] != 3 {
+		t.Errorf("Redacted = %v, want 3 for memory/notes.md", p.Redacted)
+	}
+
+	// Redacting again finds nothing: placeholders aren't secrets.
+	again, err := newPass(t, nil, time.Time{}).Text("x", out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(again) != s {
+		t.Errorf("redacting twice changed the text")
+	}
+}
+
+func TestCleanTextUnchanged(t *testing.T) {
+	in := "func main() {\n\tfmt.Println(\"hello\")\n}\nThe key idea: tokens are counted per turn.\n"
+	p := newPass(t, nil, time.Time{})
+	out, err := p.Text("a", []byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != in || len(p.Redacted) != 0 {
+		t.Errorf("clean text changed: %q, %v", out, p.Redacted)
+	}
+}
+
+func TestJSONLSecretAfterEscapedNewline(t *testing.T) {
+	aws := newFakes().aws()
+	clean := `{"type":"assistant","message":{"content":[{"type":"text","text":"Done <ok> &   fine"}]},"n":1.50}` + "\n"
+	dirty, _ := json.Marshal(map[string]any{"type": "user", "toolUseResult": map[string]any{"stdout": "keys:\n" + aws + "\nend"}})
+	in := clean + string(dirty) + "\n" + clean
+
+	// In the raw line the key follows the n of an escaped newline, so
+	// gitleaks' word boundary fails: scanning raw JSON misses it.
+	r, _ := New()
+	if ts, _ := r.scan(context.Background(), string(dirty), nil); len(ts) != 0 {
+		t.Errorf("scanning the raw line found %d secrets: gitleaks changed, and docs/design.md's reason for scanning decoded strings needs a look", len(ts))
+	}
+
+	p := newPass(t, nil, time.Time{})
+	out, err := p.JSONL("transcript.jsonl", []byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.SplitAfter(string(out), "\n")
+	if len(lines) != 4 || lines[3] != "" {
+		t.Fatalf("got %d lines", len(lines))
+	}
+	if lines[0] != clean || lines[2] != clean {
+		t.Errorf("clean lines changed:\n%s%s", lines[0], lines[2])
+	}
+	if strings.Contains(lines[1], aws) {
+		t.Fatal("the secret is still there")
+	}
+	var v struct {
+		ToolUseResult struct{ Stdout string } `json:"toolUseResult"`
+	}
+	if err := json.Unmarshal([]byte(lines[1]), &v); err != nil {
+		t.Fatalf("redacted line isn't JSON: %v", err)
+	}
+	if v.ToolUseResult.Stdout != "keys:\n[REDACTED:aws-access-token]\nend" {
+		t.Errorf("stdout = %q", v.ToolUseResult.Stdout)
+	}
+	if p.Redacted["transcript.jsonl"] != 1 {
+		t.Errorf("Redacted = %v", p.Redacted)
+	}
+}
+
+func TestJSONKeyGivesContext(t *testing.T) {
+	// The value alone looks like any identifier; its key makes it a secret.
+	val := newFakes().chars(alnum, 32)
+	line, _ := json.Marshal(map[string]any{"input": map[string]any{"api_key": val}})
+	out, err := newPass(t, nil, time.Time{}).JSONL("t", line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), val) {
+		t.Errorf("the secret is still there: %s", out)
+	}
+	if !strings.Contains(string(out), `"api_key":"[REDACTED:`) {
+		t.Errorf("key or placeholder missing: %s", out)
+	}
+}
+
+func TestEncodedSecret(t *testing.T) {
+	gh := newFakes().github()
+	blob := base64.StdEncoding.EncodeToString([]byte("export GITHUB_TOKEN=" + gh + "\n"))
+	in := "config: " + blob + "\nother: value\n"
+	p := newPass(t, nil, time.Time{})
+	out, err := p.Text("f", []byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), blob[8:40]) {
+		t.Errorf("the encoded secret is still there:\n%s", out)
+	}
+	if !strings.HasPrefix(string(out), "config: ") || !strings.HasSuffix(string(out), "\nother: value\n") {
+		t.Errorf("text around the secret changed:\n%s", out)
+	}
+}
+
+func TestSecretAcrossChunks(t *testing.T) {
+	key := newFakes().privateKey()
+	var b strings.Builder
+	for i := 0; b.Len() < chunkSize-len(key)/2; i++ {
+		fmt.Fprintf(&b, "line %d of ordinary output\n", i)
+	}
+	b.WriteString(key + "\n")
+	for i := 0; b.Len() < 3*chunkSize; i++ {
+		fmt.Fprintf(&b, "more %d\n", i)
+	}
+	in := b.String()
+	if chunkEnd(in, 0) >= strings.Index(in, "-----END") {
+		t.Fatal("the key doesn't cross the first chunk boundary")
+	}
+	out, err := newPass(t, nil, time.Time{}).Text("f", []byte(in))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), key[40:100]) || !strings.Contains(string(out), "[REDACTED:private-key]") {
+		t.Error("the private key across chunks wasn't redacted")
+	}
+}
+
+func TestPatchRedactsAddedLines(t *testing.T) {
+	f := newFakes()
+	old, added := f.github(), f.github()
+	key := f.privateKey()
+	keyLines := strings.Split(key, "\n")
+	patch := "diff --git a/.env b/.env\nindex 1..2 100644\n--- a/.env\n+++ b/.env\n" +
+		fmt.Sprintf("@@ -1,2 +1,%d @@\n", 2+len(keyLines)) +
+		" OLD_TOKEN=" + old + "\n" +
+		"-NAME=a\n" +
+		"+NAME=b\n" +
+		"+NEW_TOKEN=" + added + "\n" +
+		"+" + strings.Join(keyLines, "\n+") + "\n"
+	p := newPass(t, nil, time.Time{})
+	out, err := p.Patch("worktree/patches/.env.patch", []byte(patch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(out)
+	if strings.Contains(s, added) || strings.Contains(s, key[40:100]) {
+		t.Errorf("an added secret is still there:\n%s", s)
+	}
+	if !strings.Contains(s, " OLD_TOKEN="+old+"\n") {
+		t.Error("a context line changed; the patch would no longer apply")
+	}
+	if strings.Count(s, "\n") != strings.Count(patch, "\n") {
+		t.Errorf("line count changed:\n%s", s)
+	}
+	for _, l := range strings.Split(strings.TrimSuffix(s, "\n"), "\n")[5:] {
+		if l == "" || !strings.Contains(" -+", l[:1]) {
+			t.Errorf("hunk line %q lost its prefix", l)
+		}
+	}
+	bin := []byte("diff --git a/x b/x\nGIT binary patch\nliteral 3\n" + added + "\n")
+	if out, _ := p.Patch("x", bin); string(out) != string(bin) {
+		t.Error("a binary patch changed")
+	}
+}
+
+func TestCacheSkipsCleanContent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan")
+	gh := newFakes().github()
+	line := func(s string) string { b, _ := json.Marshal(map[string]string{"text": s}); return string(b) + "\n" }
+	transcript := line("first turn, nothing secret") + line("token "+gh) + line("second turn")
+	text := strings.Repeat("plain output line\n", 3000)
+
+	first := newPass(t, OpenCache(path), time.Time{})
+	out1, err := first.JSONL("t", []byte(transcript))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Text("f", []byte(text)); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	// A later save scans only the line with a secret, which is never
+	// cached, and what is new.
+	second := newPass(t, OpenCache(path), time.Time{})
+	out2, err := second.JSONL("t", []byte(transcript+line("third turn")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := second.Text("f", []byte(text)); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(string(out2), string(out1)) || strings.Contains(string(out2), gh) {
+		t.Error("the second save redacted differently")
+	}
+	// Lines count without their newlines.
+	if want := int64(len(line("token "+gh)) + len(line("third turn")) - 2); second.scanned != want {
+		t.Errorf("second save scanned %d bytes, want %d", second.scanned, want)
+	}
+
+	// Under other rules, the cache is ignored.
+	c := OpenCache(path)
+	c.reset([16]byte{1})
+	if len(c.old) != 0 {
+		t.Error("a cache from other rules was used")
+	}
+}
+
+func TestDeadlineLeavesPassIncomplete(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan")
+	line := `{"text":"a turn"}` + "\n"
+	first := newPass(t, OpenCache(path), time.Time{})
+	if _, err := first.JSONL("t", []byte(line)); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	next := `{"text":"the next turn"}` + "\n"
+	late := newPass(t, OpenCache(path), time.Now().Add(-time.Second))
+	if _, err := late.JSONL("t", []byte(line+next)); err != nil {
+		t.Fatal(err)
+	}
+	var inc *Incomplete
+	if err := late.Finish(); !errors.As(err, &inc) || inc.Left != int64(len(next)-1) || inc.Scanned != 0 {
+		t.Fatalf("Finish = %v, want Incomplete with %d bytes left", err, len(next)-1)
+	}
+	// The incomplete pass kept what was cached.
+	again := newPass(t, OpenCache(path), time.Time{})
+	if _, err := again.JSONL("t", []byte(line+next)); err != nil {
+		t.Fatal(err)
+	}
+	if again.scanned != int64(len(next)-1) {
+		t.Errorf("scanned %d bytes, want only the new line", again.scanned)
+	}
+	if err := again.Finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSpan(t *testing.T) {
+	s := "ab\ncdef\ngh"
+	for _, c := range []struct{ sl, sc, el, ec, start, end int }{
+		{0, 1, 0, 2, 0, 2}, // "ab": line 0 counts from 1
+		{1, 2, 1, 5, 3, 7}, // "cdef": later lines count from their newline
+		{1, 3, 2, 2, 4, 9}, // "def\ng"
+	} {
+		start, end, ok := span(s, c.sl, c.sc, c.el, c.ec)
+		if !ok || start != c.start || end != c.end {
+			t.Errorf("span(%d,%d,%d,%d) = %d,%d,%v, want %d,%d", c.sl, c.sc, c.el, c.ec, start, end, ok, c.start, c.end)
+		}
+	}
+}

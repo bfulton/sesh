@@ -161,6 +161,13 @@ func TestStatus(t *testing.T) {
 	if err != nil || !strings.Contains(out, "vault: none") || !strings.Contains(out, "store: https://…@sesh.example") || strings.Contains(out, "secret") {
 		t.Errorf("status: %v\n%s", err, out)
 	}
+	if !strings.Contains(out, "redaction: on\n") {
+		t.Errorf("status doesn't say redaction is on:\n%s", out)
+	}
+	t.Setenv("SESH_REDACT", "off")
+	if out, _, _ := runCmd(t, "status"); !strings.Contains(out, "redaction: off") {
+		t.Errorf("SESH_REDACT=off: status says\n%s", out)
+	}
 }
 
 func TestVersion(t *testing.T) {

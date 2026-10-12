@@ -61,6 +61,18 @@ Claude Code keeps a folder beside each transcript, `<session id>/`. When a tool'
 - **`sesh sync` and `sesh watch`.** Save every local transcript whose size or modification time changed since the last save. These save the conversation only: a past session's working copy is long gone. If two project folders hold the same session id, the most recently modified stands for the session.
 - **`sesh save`.** Saves on demand and shows the share token.
 
+### Secrets
+
+A save is redacted before it's encrypted (see [the reference](reference.md#secrets)), with gitleaks as a library. It's MIT licensed, has a validated rule set, and reports each secret with its location. TruffleHog, the other mature Go scanner, is AGPL-3.0, which sesh's MIT binaries can't link. Python and Node scanners would mean a second runtime.
+
+- **Strings, not raw JSON.** In a raw transcript line, a secret at the start of an output line follows the `n` of an escaped `\n`, so rules that need a word boundary before it, such as `aws-access-token`, miss it; a test shows the miss. Each JSON string is scanned decoded, prefixed with its key, which rules such as `generic-api-key` need as context. A line with a secret is encoded again, with sorted keys; every other line stays byte for byte.
+- **Small windows.** gitleaks' regular expressions slow down more than linearly with input size: the same 667 KB transcript took 1.4 s line by line and 12 s in 1 MB pieces, at the default decoding depth of 5. Text is scanned in 16 KB chunks, each window starting up to 8 KB earlier, so a private key across a boundary is whole in one window.
+- **Locations.** A secret found as is is replaced wherever it occurs. One found by decoding has no literal text, so its encoded span is replaced, from gitleaks' line and column, which count from the newline on every line but the first.
+- **Placeholders keep line breaks,** so a multi-line secret leaves its patch's line count and hunk headers valid.
+- **Patches: added lines only.** The rest is the base commit's, and must match it for `git apply`.
+- **Cache of clean hashes.** Saves happen every turn and re-read the whole session. `~/.sesh/scanned/<session>` holds 16-byte SHA-256 prefixes of transcript lines and text windows found clean, under a fingerprint of the rules and settings; content with a secret is never cached, so no secret or content reaches the cache. A complete save keeps only the hashes it used.
+- **Time limit.** The hook's save runs detached with five minutes. Scanning stops at three, records what it covered, and fails the save, so a long session's first scan progresses over several turns instead of starting over. A save out of time uploads nothing: a partially redacted archive could carry secrets.
+
 ### Working copy
 
 Capture:
@@ -137,5 +149,4 @@ None of these restore into a hosted session, carry the working copy, keep sessio
 
 - Whether a prompt can be submitted at all once an account's quota is exhausted.
 - Whether signed thinking blocks in a native session resume under a different account. If not, restore should drop them, as session-migrate does.
-- Redacting secrets from tool output before saving. Today a session's archive holds everything its transcript does.
 - How large a rendered history can be before the target model's context suffers, and how small before it misses what matters. The 100 KB default rests on one long session and one small model.

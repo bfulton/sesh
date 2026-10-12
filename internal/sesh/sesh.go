@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/bfulton/sesh/internal/archive"
+	"github.com/bfulton/sesh/internal/redact"
 	"github.com/bfulton/sesh/internal/store"
 	"github.com/bfulton/sesh/internal/token"
 	"github.com/bfulton/sesh/internal/transcript"
@@ -41,6 +42,15 @@ type SaveOptions struct {
 	TokenDir string
 	Host     string // recorded in the catalog entry
 	Now      time.Time
+
+	// Secrets in the save are replaced by placeholders, unless KeepSecrets
+	// is set. ScanCache is a file that remembers content scanned clean, so a
+	// later save of the session scans only what changed. ScanBudget, if set,
+	// limits the time spent scanning: a save out of time uploads nothing and
+	// fails with *redact.Incomplete, and the next save carries on.
+	KeepSecrets bool
+	ScanCache   string
+	ScanBudget  time.Duration
 }
 
 // SaveResult describes a completed save.
@@ -51,6 +61,7 @@ type SaveResult struct {
 	Worktree string // why the working copy was not captured, if it wasn't
 	Pushed   bool   // whether the base commit is on a remote
 	Skipped  int    // session files left out to keep the save under maxSessionFiles
+	Redacted int    // secrets replaced by placeholders
 	Entry    *vault.Entry
 }
 
@@ -108,6 +119,14 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 		a.Patches = c.Patches
 		res.Pushed = c.Pushed
 	}
+	if !o.KeepSecrets {
+		if err := redactArchive(ctx, a, o); err != nil {
+			return nil, err
+		}
+		for _, n := range a.Manifest.Redacted {
+			res.Redacted += n
+		}
+	}
 	blob, err := archive.Seal(a, tok.Key())
 	if err != nil {
 		return nil, err
@@ -129,6 +148,62 @@ func Save(ctx context.Context, o SaveOptions) (*SaveResult, error) {
 		res.Entry = &e
 	}
 	return res, nil
+}
+
+// redactArchive replaces the secrets in everything a save carries.
+func redactArchive(ctx context.Context, a *archive.Archive, o SaveOptions) error {
+	r, err := redact.New()
+	if err != nil {
+		return err
+	}
+	var cache *redact.Cache
+	if o.ScanCache != "" {
+		cache = redact.OpenCache(o.ScanCache)
+	}
+	var deadline time.Time
+	if o.ScanBudget > 0 {
+		deadline = time.Now().Add(o.ScanBudget)
+	}
+	p := redact.NewPass(ctx, r, cache, deadline)
+	if a.Transcript, err = p.JSONL(archive.TranscriptName, a.Transcript); err != nil {
+		return err
+	}
+	for _, rel := range sortedKeys(a.Files) {
+		if strings.HasSuffix(rel, ".jsonl") {
+			a.Files[rel], err = p.JSONL(archive.FileName(rel), a.Files[rel])
+		} else {
+			a.Files[rel], err = p.Text(archive.FileName(rel), a.Files[rel])
+		}
+		if err != nil {
+			return err
+		}
+	}
+	for _, rel := range sortedKeys(a.Memory) {
+		if a.Memory[rel], err = p.Text(archive.MemoryName(rel), a.Memory[rel]); err != nil {
+			return err
+		}
+	}
+	for _, path := range sortedKeys(a.Patches) {
+		if a.Patches[path], err = p.Patch(archive.PatchName(path), a.Patches[path]); err != nil {
+			return err
+		}
+	}
+	if err := p.Finish(); err != nil {
+		return err
+	}
+	if len(p.Redacted) > 0 {
+		a.Manifest.Redacted = p.Redacted
+	}
+	return nil
+}
+
+func sortedKeys(m map[string][]byte) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 // CatalogEntry describes an archive, saved under tok, as a vault catalog

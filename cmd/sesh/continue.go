@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/bfulton/sesh/internal/archive"
 	"github.com/bfulton/sesh/internal/library"
 	"github.com/bfulton/sesh/internal/sesh"
 	"github.com/bfulton/sesh/internal/store"
@@ -134,12 +135,12 @@ func cmdSave(args []string) error {
 	if *sid == "" {
 		*sid = strings.TrimSuffix(filepath.Base(*tpath), ".jsonl")
 	}
-	return saveSession(os.Stdout, os.Stderr, *sid, *tpath, *dir)
+	return saveSession(os.Stdout, os.Stderr, *sid, *tpath, *dir, 0)
 }
 
 // saveSession saves a session, writing a summary to ew and its share token
-// to w.
-func saveSession(w, ew io.Writer, sid, tpath, dir string) error {
+// to w. A scanBudget above zero limits the time spent scanning for secrets.
+func saveSession(w, ew io.Writer, sid, tpath, dir string, scanBudget time.Duration) error {
 	st, err := openStore()
 	if err != nil {
 		return err
@@ -151,6 +152,7 @@ func saveSession(w, ew io.Writer, sid, tpath, dir string) error {
 	res, err := sesh.Save(context.Background(), sesh.SaveOptions{
 		Store: st, SessionID: sid, TranscriptPath: tpath, Dir: dir,
 		Vault: v, TokenDir: tokenDir(), Host: hostLabel(),
+		KeepSecrets: keepSecrets(), ScanCache: scanCache(sid), ScanBudget: scanBudget,
 	})
 	if err != nil {
 		return err
@@ -295,6 +297,13 @@ func saveSummary(r *sesh.SaveResult) string {
 	if r.Skipped > 0 {
 		s += fmt.Sprintf("; %d large tool outputs left out", r.Skipped)
 	}
+	switch r.Redacted {
+	case 0:
+	case 1:
+		s += "; 1 secret replaced by a placeholder"
+	default:
+		s += fmt.Sprintf("; %d secrets replaced by placeholders", r.Redacted)
+	}
 	return s + "."
 }
 
@@ -308,6 +317,17 @@ func restoreSummary(r *sesh.RestoreResult) string {
 		s += "; working copy not restored: " + r.Worktree
 	}
 	s += "."
+	if r.Branch != "" {
+		var redacted []string
+		for _, p := range r.Manifest.Patches {
+			if r.Manifest.Redacted[archive.PatchName(p)] > 0 {
+				redacted = append(redacted, p)
+			}
+		}
+		if len(redacted) > 0 {
+			s += "\nSecrets in these files were replaced by placeholders when the session was saved: " + strings.Join(redacted, ", ")
+		}
+	}
 	if r.NativeSession != "" {
 		s += "\nFor the real turns, start a new session here with: claude --resume " + r.NativeSession
 		if n := r.Resumable; n.Compactions > 0 {

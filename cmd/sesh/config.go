@@ -21,6 +21,7 @@ import (
 //	key      the vault key
 //	tokens/  share tokens for sessions saved without a vault
 //	cache/   decrypted sessions and the search index (this device only)
+//	scanned/ per session, hashes of content already scanned for secrets
 //	state    what sync has already saved
 //
 // SESH_STORE and SESH_KEY override the files, which is how cloud sessions
@@ -60,7 +61,7 @@ func writeConfig(cfg map[string]string) error {
 	}
 	var b strings.Builder
 	b.WriteString("# sesh settings; SESH_STORE and SESH_KEY override these\n")
-	for _, k := range []string{"store"} {
+	for _, k := range []string{"store", "redact"} {
 		if v := cfg[k]; v != "" {
 			fmt.Fprintf(&b, "%s=%s\n", k, v)
 		}
@@ -123,6 +124,26 @@ func openStore() (store.Store, error) {
 }
 
 func tokenDir() string { return filepath.Join(seshHome(), "tokens") }
+
+// keepSecrets reports whether saves keep secrets as they are, instead of
+// replacing them with placeholders: SESH_REDACT=off, or redact=off in the
+// config file.
+func keepSecrets() bool {
+	v := os.Getenv("SESH_REDACT")
+	if v == "" {
+		v = readConfig()["redact"]
+	}
+	return v == "off"
+}
+
+// scanCache returns the file remembering what of a session was scanned for
+// secrets, or "" for an id that can't name a file.
+func scanCache(sessionID string) string {
+	if sessionID == "" || strings.ContainsAny(sessionID, `/\`) || sessionID == "." || sessionID == ".." {
+		return ""
+	}
+	return filepath.Join(seshHome(), "scanned", sessionID)
+}
 
 func budget() int {
 	if n, err := strconv.Atoi(os.Getenv("SESH_BUDGET")); err == nil && n > 0 {
