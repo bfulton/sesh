@@ -59,7 +59,7 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `state.json` | Each transcript's size and modification time at its last sync |
 | `hook-status.json` | The result of every hook run |
 | `cache/` | This device's decrypted copy of the vault |
-| `scanned/` | For each session, named by a hash of its id, hashes of the content already scanned for secrets and found clean; never content |
+| `scanned/` | For each session, named by a hash of its id, hashes of the content already scanned for secrets, and redacted copies of what held secrets; never a secret |
 | `tokens/` | Share tokens for sessions saved without a vault |
 
 | Environment variable | Effect |
@@ -93,7 +93,7 @@ A save also never keeps credentials in the remote URL it records: its user infor
 
 Rules can match text that isn't a secret, such as a test fixture with a private key. To save everything as it is, set `redact=off` in `config` or `SESH_REDACT=off`.
 
-The first save of a session scans all of it, at roughly 1 MB a second. `~/.sesh/scanned/` remembers what was clean, so later saves scan only what changed. The `Stop` hook spends at most 3 minutes scanning, and `/sesh save` 2 minutes; a save out of time uploads nothing, keeps what it scanned, and the next save carries on.
+The first save of a session scans all of it, at roughly 1 MB a second. `~/.sesh/scanned/` remembers what was clean, and keeps redacted copies of what held secrets, so later saves scan only what changed. The `Stop` hook spends at most 3 minutes scanning, and `/sesh save` 2 minutes; a save out of time uploads nothing, keeps what it scanned, and the next save carries on.
 
 ## Storage
 

@@ -4,20 +4,21 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
-	"encoding/json"
+	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 	"time"
 	"unicode/utf8"
 )
 
-// A Pass redacts the files of one save. It skips content its cache knows is
-// clean, and once its deadline passes it stops scanning, only measuring what
-// is left, so that a save with a time limit resumes where the last stopped.
+// A Pass redacts the files of one save. Content its cache knows is skipped:
+// clean content as it is, content with secrets as the cache's redacted copy.
+// Once its deadline passes it stops scanning, only measuring what is left,
+// so that a save with a time limit resumes where the last stopped.
 type Pass struct {
 	r        *Redactor
 	cache    *Cache
@@ -75,7 +76,7 @@ func (p *Pass) outOfTime() bool {
 // deadline, every other window is counted as left and skipped too, which
 // leaves the pass incomplete.
 func (p *Pass) Skip(w string) bool {
-	if p.cache.has(hash('t', w)) {
+	if p.cache.clean(hash('t', w)) {
 		return true
 	}
 	if p.outOfTime() {
@@ -87,19 +88,37 @@ func (p *Pass) Skip(w string) bool {
 }
 
 // Clean implements Windows.
-func (p *Pass) Clean(w string) { p.cache.add(hash('t', w)) }
+func (p *Pass) Clean(w string) { p.cache.addClean(hash('t', w)) }
 
 // Text redacts a text file. Files that aren't UTF-8 are left as they are.
 func (p *Pass) Text(name string, data []byte) ([]byte, error) {
 	if !utf8.Valid(data) {
 		return data, nil
 	}
-	out, n, err := p.r.redact(p.ctx, "", string(data), p)
+	return p.cached(name, hash('T', string(data)), data, func() ([]byte, int, error) {
+		out, n, err := p.r.redact(p.ctx, "", string(data), p)
+		return []byte(out), n, err
+	})
+}
+
+// cached returns the cache's redacted copy of data, whose hash is h, if it
+// has one, and otherwise redacts it with f. A redacted copy is cached only
+// when all of data was scanned.
+func (p *Pass) cached(name string, h [16]byte, data []byte, f func() ([]byte, int, error)) ([]byte, error) {
+	if out, n, ok := p.cache.redacted(h); ok {
+		p.count(name, n)
+		return out, nil
+	}
+	left := p.left
+	out, n, err := f()
 	if err != nil {
 		return nil, err
 	}
+	if n > 0 && p.left == left {
+		p.cache.addRedacted(h, out, n)
+	}
 	p.count(name, n)
-	return []byte(out), nil
+	return out, nil
 }
 
 func (p *Pass) count(name string, n int) {
@@ -111,9 +130,10 @@ func (p *Pass) count(name string, n int) {
 // JSONL redacts a JSONL file, such as a transcript, line by line. Each
 // string is scanned decoded, after its key, which gitleaks' rules use as
 // context: in the raw line, a secret just after an escaped newline has no
-// word boundary before it, and rules that need one miss it. A line with a
-// secret is encoded again with the secret replaced; every other line stays
-// byte for byte. A line that isn't one JSON value, such as the end of a
+// word boundary before it, and rules that need one miss it. Every member of
+// an object is scanned, a repeated key included. A line with a secret is
+// encoded again, members in their order, with the secret replaced; every
+// other line stays byte for byte. A line that isn't one JSON value, such as the end of a
 // file still being written, is left out: scanning it raw could miss a
 // secret, and a line being written is whole by the next save.
 func (p *Pass) JSONL(name string, data []byte) ([]byte, error) {
@@ -153,38 +173,43 @@ func (p *Pass) jsonLine(line []byte) ([]byte, int, error) {
 		return line, 0, nil
 	}
 	h := hash('j', string(line))
-	if p.cache.has(h) {
+	if p.cache.clean(h) {
 		return line, 0, nil
+	}
+	if out, n, ok := p.cache.redacted(h); ok {
+		return out, n, nil
 	}
 	if p.outOfTime() {
 		p.left += int64(len(line))
 		return line, 0, nil
 	}
-	var v any
-	dec := json.NewDecoder(bytes.NewReader(line))
-	dec.UseNumber()
-	if err := dec.Decode(&v); err != nil || len(bytes.TrimSpace(line[dec.InputOffset():])) > 0 || !utf8.Valid(line) {
+	if !utf8.Valid(line) {
+		return nil, 0, errNotJSON
+	}
+	v, err := decodeJSON(line)
+	if err != nil {
 		return nil, 0, errNotJSON
 	}
 	p.scanned += int64(len(line))
 	left, n := p.left, 0
-	v, err := p.walk(v, "", &n)
-	if err != nil {
+	if v, err = p.walk(v, "", &n); err != nil {
 		return nil, 0, err
 	}
+	whole := p.left == left
 	if n == 0 {
-		if p.left == left { // scanned whole
-			p.cache.add(h)
+		if whole {
+			p.cache.addClean(h)
 		}
 		return line, 0, nil
 	}
 	var buf bytes.Buffer
-	enc := json.NewEncoder(&buf)
-	enc.SetEscapeHTML(false)
-	if err := enc.Encode(v); err != nil {
+	if err := encodeJSON(&buf, v); err != nil {
 		return nil, 0, err
 	}
-	return bytes.TrimRight(buf.Bytes(), "\n"), n, nil
+	if whole {
+		p.cache.addRedacted(h, buf.Bytes(), n)
+	}
+	return buf.Bytes(), n, nil
 }
 
 // stringWindows checks the deadline between the windows of a decoded JSON
@@ -207,9 +232,9 @@ func (stringWindows) Clean(string) {}
 // data is compressed binary, in which no rule finds text, and scanning it
 // costs: a run of encoded text is scanned whole. Other media types, such as
 // text/plain, are scanned.
-func binarySource(m map[string]any) bool {
-	t, _ := m["type"].(string)
-	mt, _ := m["media_type"].(string)
+func binarySource(o object) bool {
+	t, _ := o.get("type").(string)
+	mt, _ := o.get("media_type").(string)
 	return t == "base64" && (strings.HasPrefix(mt, "image/") || mt == "application/pdf")
 }
 
@@ -236,37 +261,33 @@ func (p *Pass) walk(v any, key string, n *int) (any, error) {
 			}
 			x[i] = y
 		}
-	case map[string]any:
-		keys := make([]string, 0, len(x))
-		for k := range x {
-			keys = append(keys, k)
-		}
-		sort.Strings(keys)
-		for _, k := range keys {
-			if k == "data" && binarySource(x) {
+	case object:
+		binary := binarySource(x)
+		for i, m := range x {
+			if m.key == "data" && binary {
 				continue
 			}
-			y, err := p.walk(x[k], k, n)
+			y, err := p.walk(m.val, m.key, n)
 			if err != nil {
 				return nil, err
 			}
-			nk, kn, err := p.r.redact(p.ctx, "", k, stringWindows{p})
+			x[i].val = y
+			nk, kn, err := p.r.redact(p.ctx, "", m.key, stringWindows{p})
 			if err != nil {
 				return nil, err
 			}
 			if kn == 0 {
-				x[k] = y
 				continue
 			}
 			*n += kn
-			delete(x, k)
-			for i := 2; ; i++ {
-				if _, taken := x[nk]; !taken {
-					break
-				}
-				nk = strings.TrimSuffix(nk, fmt.Sprintf(" %d", i-1)) + fmt.Sprintf(" %d", i)
+			// A placeholder another key already has gets a number, so the
+			// object doesn't gain a repeated key whose earlier value a
+			// reader would drop.
+			base := nk
+			for j := 2; x.has(nk); j++ {
+				nk = fmt.Sprintf("%s %d", base, j)
 			}
-			x[nk] = y
+			x[i].key = nk
 		}
 	}
 	return v, nil
@@ -279,6 +300,12 @@ func (p *Pass) Patch(name string, data []byte) ([]byte, error) {
 	if bytes.Contains(data, []byte("\nGIT binary patch\n")) || !utf8.Valid(data) {
 		return data, nil
 	}
+	return p.cached(name, hash('P', string(data)), data, func() ([]byte, int, error) {
+		return p.patch(name, data)
+	})
+}
+
+func (p *Pass) patch(name string, data []byte) ([]byte, int, error) {
 	lines := strings.SplitAfter(string(data), "\n")
 	var added []int
 	var text strings.Builder
@@ -295,27 +322,26 @@ func (p *Pass) Patch(name string, data []byte) ([]byte, error) {
 		}
 	}
 	if len(added) == 0 {
-		return data, nil
+		return data, 0, nil
 	}
 	out, n, err := p.r.redact(p.ctx, "", text.String(), p)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	if n == 0 {
-		return data, nil
+		return data, 0, nil
 	}
 	red := strings.SplitAfter(out, "\n")
 	if red[len(red)-1] == "" {
 		red = red[:len(red)-1]
 	}
 	if len(red) != len(added) {
-		return nil, errors.New("redacting " + name + " changed its line count")
+		return nil, 0, errors.New("redacting " + name + " changed its line count")
 	}
 	for k, i := range added {
 		lines[i] = "+" + red[k]
 	}
-	p.count(name, n)
-	return []byte(strings.Join(lines, "")), nil
+	return []byte(strings.Join(lines, "")), n, nil
 }
 
 func hash(kind byte, s string) [16]byte {
@@ -327,27 +353,32 @@ func hash(kind byte, s string) [16]byte {
 	return out
 }
 
-// A Cache remembers, as hashes, content scanned and found clean, so that
-// saving a session again scans only what changed. It never holds content.
+// A Cache remembers what of a session was scanned, so that saving it again
+// scans only what changed. Content found clean is kept as its hash alone.
+// Content with secrets is kept as its hash and a redacted copy, in a file
+// of its own beside the cache, so that it isn't scanned again either; the
+// copy holds placeholders, never the secrets.
 type Cache struct {
 	path string
 	fp   [16]byte
-	old  map[[16]byte]bool // read from path
-	used map[[16]byte]bool // known clean in this pass
+	old  map[[16]byte]int // read from path: placeholders, 0 when clean
+	used map[[16]byte]int // known in this pass
+
+	copies map[[16]byte][]byte // redacted copies, when there is no path
 }
 
 // OpenCache reads the cache at path. A missing or unreadable cache is empty.
 func OpenCache(path string) *Cache {
-	c := &Cache{path: path, old: map[[16]byte]bool{}}
+	c := &Cache{path: path, old: map[[16]byte]int{}}
 	data, err := os.ReadFile(path)
-	if err != nil || len(data) < 16 || len(data)%16 != 0 {
+	if err != nil || len(data) < 16 || (len(data)-16)%20 != 0 {
 		return c
 	}
 	copy(c.fp[:], data)
-	for i := 16; i < len(data); i += 16 {
+	for i := 16; i < len(data); i += 20 {
 		var h [16]byte
 		copy(h[:], data[i:])
-		c.old[h] = true
+		c.old[h] = int(binary.BigEndian.Uint32(data[i+16:]))
 	}
 	return c
 }
@@ -355,49 +386,119 @@ func OpenCache(path string) *Cache {
 // reset empties a cache made under other rules.
 func (c *Cache) reset(fp [16]byte) {
 	if c.fp != fp {
-		c.fp, c.old = fp, map[[16]byte]bool{}
+		c.fp, c.old = fp, map[[16]byte]int{}
 	}
 	if c.used == nil {
-		c.used = map[[16]byte]bool{}
+		c.used = map[[16]byte]int{}
+	}
+	if c.copies == nil {
+		c.copies = map[[16]byte][]byte{}
 	}
 }
 
-func (c *Cache) has(h [16]byte) bool {
-	if c.old[h] || c.used[h] {
-		c.used[h] = true
-		return true
+func (c *Cache) lookup(h [16]byte) (int, bool) {
+	if n, ok := c.used[h]; ok {
+		return n, true
 	}
-	return false
+	if n, ok := c.old[h]; ok {
+		c.used[h] = n
+		return n, true
+	}
+	return 0, false
 }
 
-func (c *Cache) add(h [16]byte) { c.used[h] = true }
+// clean reports whether content with hash h was scanned and found clean.
+func (c *Cache) clean(h [16]byte) bool {
+	n, ok := c.lookup(h)
+	return ok && n == 0
+}
+
+// redacted returns the redacted copy of content with hash h, and how many
+// placeholders it holds, if the cache has one.
+func (c *Cache) redacted(h [16]byte) ([]byte, int, bool) {
+	n, ok := c.lookup(h)
+	if !ok || n == 0 {
+		return nil, 0, false
+	}
+	if data, ok := c.copies[h]; ok {
+		return data, n, true
+	}
+	if c.path != "" {
+		if data, err := os.ReadFile(c.copyPath(h)); err == nil {
+			return data, n, true
+		}
+	}
+	delete(c.used, h) // the copy is gone: scan again
+	return nil, 0, false
+}
+
+func (c *Cache) addClean(h [16]byte) { c.used[h] = 0 }
+
+// addRedacted keeps the redacted copy of content with hash h. If the copy
+// can't be written, the content is scanned again next time.
+func (c *Cache) addRedacted(h [16]byte, out []byte, n int) {
+	if c.path == "" {
+		c.copies[h] = out
+	} else if writeFile(c.copyPath(h), out) != nil {
+		return
+	}
+	c.used[h] = n
+}
+
+func (c *Cache) copyPath(h [16]byte) string {
+	return filepath.Join(c.path+".d", hex.EncodeToString(h[:]))
+}
 
 // save writes the cache. After a complete pass it keeps only what that pass
-// used, so it tracks the session's current content; after an incomplete one
-// it keeps everything.
+// used, so it tracks the session's current content, and removes redacted
+// copies no longer used; after an incomplete one it keeps everything.
 func (c *Cache) save(complete bool) error {
 	if c.path == "" {
 		return nil
 	}
 	keep := c.used
 	if !complete {
-		for h := range c.old {
-			keep[h] = true
+		for h, n := range c.old {
+			if _, ok := keep[h]; !ok {
+				keep[h] = n
+			}
 		}
 	}
-	buf := make([]byte, 0, 16*(len(keep)+1))
+	buf := make([]byte, 0, 16+20*len(keep))
 	buf = append(buf, c.fp[:]...)
-	for h := range keep {
+	for h, n := range keep {
 		buf = append(buf, h[:]...)
+		buf = binary.BigEndian.AppendUint32(buf, uint32(n))
 	}
-	if err := os.MkdirAll(filepath.Dir(c.path), 0o700); err != nil {
+	if err := writeFile(c.path, buf); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(c.path), ".scan-*")
+	if complete {
+		entries, _ := os.ReadDir(c.path + ".d")
+		for _, e := range entries {
+			var h [16]byte
+			if b, err := hex.DecodeString(e.Name()); err == nil && len(b) == 16 {
+				copy(h[:], b)
+				if keep[h] > 0 {
+					continue
+				}
+			}
+			os.Remove(filepath.Join(c.path+".d", e.Name()))
+		}
+	}
+	return nil
+}
+
+// writeFile replaces a file at once, readable only by its owner.
+func writeFile(path string, data []byte) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".scan-*")
 	if err != nil {
 		return err
 	}
-	if _, err := tmp.Write(buf); err != nil {
+	if _, err := tmp.Write(data); err != nil {
 		tmp.Close()
 		os.Remove(tmp.Name())
 		return err
@@ -406,5 +507,5 @@ func (c *Cache) save(complete bool) error {
 		os.Remove(tmp.Name())
 		return err
 	}
-	return os.Rename(tmp.Name(), c.path)
+	return os.Rename(tmp.Name(), path)
 }

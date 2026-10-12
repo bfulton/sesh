@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -257,8 +258,8 @@ func TestCacheSkipsCleanContent(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// A later save scans only the line with a secret, which is never
-	// cached, and what is new.
+	// A later save scans only what is new: the line with a secret comes
+	// from the cache's redacted copy.
 	second := newPass(t, OpenCache(path), time.Time{})
 	out2, err := second.JSONL("t", []byte(transcript+line("third turn")))
 	if err != nil {
@@ -274,8 +275,22 @@ func TestCacheSkipsCleanContent(t *testing.T) {
 		t.Error("the second save redacted differently")
 	}
 	// Lines count without their newlines.
-	if want := int64(len(line("token "+gh)) + len(line("third turn")) - 2); second.scanned != want {
+	if want := int64(len(line("third turn")) - 1); second.scanned != want {
 		t.Errorf("second save scanned %d bytes, want %d", second.scanned, want)
+	}
+	if second.Redacted["t"] != 1 {
+		t.Errorf("second save counted %v, want the cached line's placeholder", second.Redacted)
+	}
+	// The cache keeps the redacted copy, never the secret.
+	copies, _ := os.ReadDir(path + ".d")
+	if len(copies) != 1 {
+		t.Fatalf("%d redacted copies, want 1", len(copies))
+	}
+	if b, _ := os.ReadFile(filepath.Join(path+".d", copies[0].Name())); strings.Contains(string(b), gh) || !strings.Contains(string(b), "[REDACTED:") {
+		t.Errorf("redacted copy: %s", b)
+	}
+	if b, _ := os.ReadFile(path); strings.Contains(string(b), gh) {
+		t.Error("the cache holds the secret")
 	}
 
 	// Under other rules, the cache is ignored.
@@ -392,7 +407,7 @@ func TestDeadlineInsideJSONString(t *testing.T) {
 	p := newPass(t, nil, time.Now().Add(-time.Second))
 	long := strings.Repeat("output line\n", 5000)
 	n := 0
-	if _, err := p.walk(map[string]any{"text": long}, "", &n); err != nil {
+	if _, err := p.walk(object{{"text", long}}, "", &n); err != nil {
 		t.Fatal(err)
 	}
 	if p.left < int64(len(long)) {
@@ -446,7 +461,7 @@ func TestImageDataNotScanned(t *testing.T) {
 	p := newPass(t, nil, time.Now().Add(-time.Second))
 	data := strings.Repeat("iVBORw0KGgoAAAANSUhEUgAA", 4000)
 	n := 0
-	if _, err := p.walk(map[string]any{"type": "image", "source": map[string]any{"type": "base64", "media_type": "image/png", "data": data}}, "", &n); err != nil {
+	if _, err := p.walk(object{{"type", "image"}, {"source", object{{"type", "base64"}, {"media_type", "image/png"}, {"data", data}}}}, "", &n); err != nil {
 		t.Fatal(err)
 	}
 	if p.left >= int64(len(data)) {
@@ -507,5 +522,75 @@ func TestJSONLLeavesOutTrailingData(t *testing.T) {
 		if string(out) != whole {
 			t.Errorf("a line with trailing data was kept: %q", out)
 		}
+	}
+}
+
+func TestJSONLDuplicateKeys(t *testing.T) {
+	// A repeated key's earlier value is scanned too, and both stay.
+	gh := newFakes().github()
+	line := `{"type":"user","token":"` + gh + `","token":"clean"}`
+	out, err := newPass(t, nil, time.Time{}).JSONL("t", []byte(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"type":"user","token":"[REDACTED:github-pat]","token":"clean"}`; string(out) != want {
+		t.Errorf("got %s, want %s", out, want)
+	}
+}
+
+func TestJSONLKeepsMemberOrder(t *testing.T) {
+	gh := newFakes().github()
+	line := `{"z":1,"a":{"y":true,"b":null},"m":"token ` + gh + ` <&>","n":[1.50,"x"]}`
+	out, err := newPass(t, nil, time.Time{}).JSONL("t", []byte(line))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := `{"z":1,"a":{"y":true,"b":null},"m":"token [REDACTED:github-pat] <&>","n":[1.50,"x"]}`; string(out) != want {
+		t.Errorf("got %s, want %s", out, want)
+	}
+}
+
+func TestCacheKeepsRedactedFiles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "scan")
+	f := newFakes()
+	text := strings.Repeat("plain output line\n", 3000) + "GITHUB_TOKEN=" + f.github() + "\n"
+	patch := "diff --git a/.env b/.env\n--- a/.env\n+++ b/.env\n@@ -0,0 +1 @@\n+TOKEN=" + f.github() + "\n"
+
+	first := newPass(t, OpenCache(path), time.Time{})
+	t1, err := first.Text("f", []byte(text))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p1, err := first.Patch("p", []byte(patch))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Finish(); err != nil {
+		t.Fatal(err)
+	}
+
+	second := newPass(t, OpenCache(path), time.Time{})
+	t2, _ := second.Text("f", []byte(text))
+	p2, _ := second.Patch("p", []byte(patch))
+	if err := second.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if second.scanned != 0 {
+		t.Errorf("second save scanned %d bytes, want none", second.scanned)
+	}
+	if string(t2) != string(t1) || string(p2) != string(p1) || second.Redacted["f"] != 1 || second.Redacted["p"] != 1 {
+		t.Errorf("second save redacted differently: %v", second.Redacted)
+	}
+
+	// Once the content is gone, a complete save drops its copies.
+	third := newPass(t, OpenCache(path), time.Time{})
+	if _, err := third.Text("f", []byte("other\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := third.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if copies, _ := os.ReadDir(path + ".d"); len(copies) != 0 {
+		t.Errorf("%d redacted copies left, want 0", len(copies))
 	}
 }

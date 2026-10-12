@@ -32,7 +32,7 @@ const (
 
 	// version changes whenever sesh would redact the same input differently,
 	// so that content scanned before is scanned again.
-	version = "1"
+	version = "2"
 )
 
 // A Redactor scans text with gitleaks' default rules.
