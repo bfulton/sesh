@@ -453,3 +453,27 @@ func TestImageDataNotScanned(t *testing.T) {
 		t.Errorf("%d bytes left: the image data was scanned", p.left)
 	}
 }
+
+func TestBase64TextSourceScanned(t *testing.T) {
+	gh := newFakes().github()
+	data := base64.StdEncoding.EncodeToString([]byte("GITHUB_TOKEN=" + gh + "\n"))
+	line, _ := json.Marshal(map[string]any{"source": map[string]any{"type": "base64", "media_type": "text/plain", "data": data}})
+	out, err := newPass(t, nil, time.Time{}).JSONL("t", line)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(out), data) {
+		t.Error("base64 text/plain data was skipped")
+	}
+}
+
+func TestBlockEndBounded(t *testing.T) {
+	// After a PEM block's end, a chunk grows to the next line end only
+	// within chunkSize, not across a long line.
+	s := "-----BEGIN RSA PRIVATE KEY-----\n" + strings.Repeat("x", 100) + strings.Repeat("y", chunkSize) +
+		"-----END RSA PRIVATE KEY-----" + strings.Repeat("z", 4*chunkSize)
+	b := blockEnd(s, 0, 50)
+	if end := strings.Index(s, "-----END"); b < end || b > end+chunkSize {
+		t.Errorf("blockEnd = %d, want within a chunk after the END marker at %d", b, end)
+	}
+}

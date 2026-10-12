@@ -198,13 +198,14 @@ func (w stringWindows) Skip(s string) bool {
 func (stringWindows) Clean(string) {}
 
 // binarySource reports whether a JSON object is the source of an image or
-// document, such as {"type":"base64","media_type":"image/png","data":...}.
-// Its data is compressed binary, in which no rule finds text, and scanning
-// it costs: a run of encoded text is scanned whole.
+// PDF, such as {"type":"base64","media_type":"image/png","data":...}. Its
+// data is compressed binary, in which no rule finds text, and scanning it
+// costs: a run of encoded text is scanned whole. Other media types, such as
+// text/plain, are scanned.
 func binarySource(m map[string]any) bool {
 	t, _ := m["type"].(string)
-	_, typed := m["media_type"].(string)
-	return t == "base64" && typed
+	mt, _ := m["media_type"].(string)
+	return t == "base64" && (strings.HasPrefix(mt, "image/") || mt == "application/pdf")
 }
 
 // walk redacts the strings in a decoded JSON value, object keys included.

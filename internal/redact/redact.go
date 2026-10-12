@@ -211,10 +211,11 @@ func blockEnd(s string, w, b int) int {
 		return b
 	}
 	end := b + j
-	if k := strings.IndexByte(s[end:], '\n'); k >= 0 {
+	limit := min(len(s), end+chunkSize)
+	if k := strings.IndexByte(s[end:limit], '\n'); k >= 0 {
 		return end + k + 1
 	}
-	return len(s)
+	return runeStart(s, limit)
 }
 
 // maxRun bounds how far a chunk grows to hold a whole run of encoded text.
