@@ -240,11 +240,22 @@ func newVersion(dir string) error {
 	if _, err := rand.Read(b[:]); err != nil {
 		return err
 	}
-	p := filepath.Join(dir, versionFile)
-	if err := os.WriteFile(p+".tmp", []byte(hex.EncodeToString(b[:])), 0o600); err != nil {
+	// A temporary file of its own: a pull writes sessions concurrently.
+	tmp, err := os.CreateTemp(dir, ".version-*")
+	if err != nil {
 		return err
 	}
-	return os.Rename(p+".tmp", p)
+	_, err = tmp.WriteString(hex.EncodeToString(b[:]))
+	if cerr := tmp.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil {
+		err = os.Rename(tmp.Name(), filepath.Join(dir, versionFile))
+	}
+	if err != nil {
+		os.Remove(tmp.Name())
+	}
+	return err
 }
 
 func (l *Library) buildIndex() {

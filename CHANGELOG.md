@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- An S3 store is configured from sesh's own variables only:
+  `SESH_AWS_ACCESS_KEY_ID`, `SESH_AWS_SECRET_ACCESS_KEY`,
+  `SESH_AWS_SESSION_TOKEN`, `SESH_AWS_REGION` and `SESH_AWS_ENDPOINT_URL_S3`.
+  It no longer reads the `AWS_` variables or shared AWS config files, which
+  other AWS tools share, so sesh's credentials and theirs can't mix.
+
 ### Fixed
 
 - The MCP server sees a session restored on this device at once. It missed
