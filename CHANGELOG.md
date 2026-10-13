@@ -16,6 +16,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   under `NAME` in the bucket, and `SESH_VAULT=NAME` selects it. The first
   vault is `default`.
 - `sesh env` prints the variables that give a cloud environment your vault.
+- sesh refuses an AWS bucket that could be public: one without all four
+  Block Public Access settings on, checked at `sesh init -aws` and each time
+  a command opens the store. With `aws_account_id` (`SESH_AWS_ACCOUNT_ID`),
+  which `sesh init -aws` sets, it also refuses a bucket another account owns.
 
 ### Changed
 

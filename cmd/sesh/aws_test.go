@@ -14,16 +14,25 @@ import (
 	"testing"
 	"time"
 
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/credentials"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/johannesboyne/gofakes3"
 	"github.com/johannesboyne/gofakes3/backend/s3mem"
+
+	"github.com/bfulton/sesh/internal/store"
 )
 
 // fakeAWS records what sesh init -aws asks of AWS, and keeps buckets in a
 // gofakes3 backend.
 type fakeAWS struct {
 	region   string
+	account  string
 	backend  *s3mem.Backend
 	buckets  map[string]string // bucket → region
+	owners   map[string]string // bucket → account
+	private  map[string]bool   // bucket → all four Block Public Access settings on
+	public   map[string]bool   // bucket → no Block Public Access settings at all
 	users    map[string]bool
 	policies map[string]string // user → policy document
 	keys     map[string]int    // user → access keys made
@@ -31,13 +40,39 @@ type fakeAWS struct {
 
 func (f *fakeAWS) Region() string { return f.region }
 
-func (f *fakeAWS) BucketRegion(_ context.Context, b string) (string, error) {
+func (f *fakeAWS) AccountID(context.Context) (string, error) { return f.account, nil }
+
+func (f *fakeAWS) BucketRegion(_ context.Context, b, owner string) (string, error) {
+	if f.buckets[b] != "" && f.owners[b] != owner {
+		return "", errors.New("another account's bucket")
+	}
 	return f.buckets[b], nil
 }
 
 func (f *fakeAWS) CreateBucket(_ context.Context, b, region string) error {
-	f.buckets[b] = region
+	f.buckets[b], f.owners[b] = region, f.account
 	return f.backend.CreateBucket(b)
+}
+
+func (f *fakeAWS) BlockPublicAccess(_ context.Context, b, _, owner string) error {
+	if f.owners[b] != owner {
+		return errors.New("access denied")
+	}
+	f.private[b], f.public[b] = true, false
+	return nil
+}
+
+// CheckPrivate asks the fake S3 server, as the real one asks S3.
+func (f *fakeAWS) CheckPrivate(ctx context.Context, b, _, owner string) error {
+	c := s3.New(s3.Options{Region: "auto", BaseEndpoint: aws.String(awsCheckEndpoint), UsePathStyle: true,
+		Credentials: credentials.NewStaticCredentialsProvider("admin", "admin", "")})
+	return store.CheckPrivate(ctx, c, b, owner)
+}
+
+// addBucket adds a bucket of account, private or not.
+func (f *fakeAWS) addBucket(b, region, account string, private bool) {
+	f.buckets[b], f.owners[b], f.private[b] = region, account, private
+	f.backend.CreateBucket(b)
 }
 
 func (f *fakeAWS) EnsureUser(_ context.Context, name string) error {
@@ -61,25 +96,54 @@ func (f *fakeAWS) CreateAccessKey(_ context.Context, user string) (string, strin
 }
 
 // setupFakeAWS replaces AWS with a fake whose S3 refuses the first
-// refusals requests, as S3 does while new IAM credentials propagate.
+// refusals requests, as S3 does while new IAM credentials propagate. Its S3
+// also checks the expected bucket owner, and answers for each bucket's
+// Block Public Access settings, which gofakes3 doesn't.
 func setupFakeAWS(t *testing.T, refusals int32) *fakeAWS {
 	t.Helper()
-	f := &fakeAWS{region: "eu-west-1", backend: s3mem.New(), buckets: map[string]string{},
+	f := &fakeAWS{region: "eu-west-1", account: "111122223333", backend: s3mem.New(),
+		buckets: map[string]string{}, owners: map[string]string{}, private: map[string]bool{}, public: map[string]bool{},
 		users: map[string]bool{}, policies: map[string]string{}, keys: map[string]int{}}
-	s3 := gofakes3.New(f.backend).Server()
+	fake := gofakes3.New(f.backend).Server()
 	var n atomic.Int32
+	s3err := func(w http.ResponseWriter, status int, code string) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.WriteHeader(status)
+		fmt.Fprintf(w, "<Error><Code>%s</Code><Message>%s</Message></Error>", code, code)
+	}
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if n.Add(1) <= refusals {
-			http.Error(w, "<Error><Code>InvalidAccessKeyId</Code></Error>", http.StatusForbidden)
+		// Only the new access key is refused; the admin's works at once.
+		admin := strings.Contains(r.Header.Get("Authorization"), "Credential=admin/")
+		if !admin && n.Add(1) <= refusals {
+			s3err(w, http.StatusForbidden, "InvalidAccessKeyId")
 			return
 		}
-		s3.ServeHTTP(w, r)
+		bucket, _, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/"), "/")
+		if o := r.Header.Get("X-Amz-Expected-Bucket-Owner"); o != "" && o != f.owners[bucket] {
+			s3err(w, http.StatusForbidden, "AccessDenied")
+			return
+		}
+		if _, ok := r.URL.Query()["publicAccessBlock"]; ok && r.Method == http.MethodGet {
+			if f.public[bucket] {
+				s3err(w, http.StatusNotFound, "NoSuchPublicAccessBlockConfiguration")
+				return
+			}
+			p := f.private[bucket]
+			fmt.Fprintf(w, `<PublicAccessBlockConfiguration xmlns="http://s3.amazonaws.com/doc/2006-03-01/">`+
+				`<BlockPublicAcls>true</BlockPublicAcls><IgnorePublicAcls>%v</IgnorePublicAcls>`+
+				`<BlockPublicPolicy>true</BlockPublicPolicy><RestrictPublicBuckets>%v</RestrictPublicBuckets>`+
+				`</PublicAccessBlockConfiguration>`, p, p)
+			return
+		}
+		fake.ServeHTTP(w, r)
 	}))
 	t.Cleanup(srv.Close)
 	oldAdmin, oldEndpoint, oldRetry := newAWSAdmin, awsCheckEndpoint, awsRetry
 	t.Cleanup(func() { newAWSAdmin, awsCheckEndpoint, awsRetry = oldAdmin, oldEndpoint, oldRetry })
 	newAWSAdmin = func(context.Context) (awsAdmin, error) { return f, nil }
 	awsCheckEndpoint = srv.URL
+	checkAllBuckets = true
+	t.Cleanup(func() { checkAllBuckets = false })
 	awsRetry.every, awsRetry.limit = time.Millisecond, 5*time.Second
 	for _, k := range configKeys {
 		t.Setenv(k.env, "")
@@ -111,7 +175,7 @@ func TestInitAWS(t *testing.T) {
 			Condition map[string]map[string]string
 		}
 	}
-	if err := json.Unmarshal([]byte(f.policies[user]), &doc); err != nil || len(doc.Statement) != 2 {
+	if err := json.Unmarshal([]byte(f.policies[user]), &doc); err != nil || len(doc.Statement) != 3 {
 		t.Fatalf("policy %s: %v", f.policies[user], err)
 	}
 	if s := doc.Statement[0]; strings.Join(s.Action, ",") != "s3:GetObject,s3:PutObject" || s.Resource != "arn:aws:s3:::my-bucket/team/x/vault01/*" {
@@ -120,6 +184,12 @@ func TestInitAWS(t *testing.T) {
 	if s := doc.Statement[1]; strings.Join(s.Action, ",") != "s3:ListBucket" || s.Resource != "arn:aws:s3:::my-bucket" ||
 		s.Condition["StringLike"]["s3:prefix"] != "team/x/vault01/*" {
 		t.Errorf("list statement %+v", s)
+	}
+	if s := doc.Statement[2]; strings.Join(s.Action, ",") != "s3:GetBucketPublicAccessBlock" || s.Resource != "arn:aws:s3:::my-bucket" || s.Condition != nil {
+		t.Errorf("check statement %+v", s)
+	}
+	if !f.private["my-bucket"] {
+		t.Error("a new bucket's public access isn't blocked")
 	}
 
 	dir := filepath.Join(os.Getenv("SESH_HOME"), "vault01")
@@ -132,7 +202,7 @@ func TestInitAWS(t *testing.T) {
 	}
 	t.Setenv("SESH_VAULT", "vault01")
 	cfg := readConfig()
-	if cfg["store"] != "s3://my-bucket/team/x/vault01" || cfg["aws_region"] != "eu-west-1" || cfg["aws_access_key_id"] == "" || cfg["aws_secret_access_key"] == "" {
+	if cfg["store"] != "s3://my-bucket/team/x/vault01" || cfg["aws_region"] != "eu-west-1" || cfg["aws_account_id"] != f.account || cfg["aws_access_key_id"] == "" || cfg["aws_secret_access_key"] == "" {
 		t.Errorf("config %v", redactedCfg(cfg))
 	}
 	if !strings.Contains(out, cfg["store"]) {
@@ -152,6 +222,25 @@ func TestInitAWS(t *testing.T) {
 	if _, err := f.backend.HeadObject("my-bucket", "team/x/vault01/"+obj); err != nil {
 		t.Errorf("object not under the vault's prefix: %v", err)
 	}
+
+	// A bucket made public since is refused, as is one that changed hands.
+	f.private["my-bucket"] = false
+	if _, err := openStore(); err == nil || !strings.Contains(err.Error(), "IgnorePublicAcls, RestrictPublicBuckets off") {
+		t.Errorf("openStore of a public bucket: %v", err)
+	}
+	f.public["my-bucket"] = true
+	if _, err := openStore(); err == nil || !strings.Contains(err.Error(), "no Block Public Access settings") {
+		t.Errorf("openStore of a bucket without Block Public Access: %v", err)
+	}
+	f.private["my-bucket"], f.public["my-bucket"] = true, false
+	f.owners["my-bucket"] = "444455556666"
+	if _, err := openStore(); err == nil || !strings.Contains(err.Error(), "must belong to AWS account "+f.account) {
+		t.Errorf("openStore of another account's bucket: %v", err)
+	}
+	if err := st.Put(context.Background(), obj, []byte("y")); err == nil {
+		t.Error("Put to another account's bucket succeeded")
+	}
+	f.owners["my-bucket"] = f.account
 
 	// Again, with the same store: the policy is set again, and the
 	// access key kept.
@@ -203,10 +292,13 @@ func redactedCfg(cfg map[string]string) map[string]string {
 func TestInitAWSRefusals(t *testing.T) {
 	f := setupFakeAWS(t, 0)
 	claudeEnv(t, false, false)
-	f.buckets["theirs"] = "us-west-2"
-	f.backend.CreateBucket("theirs")
+	f.addBucket("theirs", "us-west-2", f.account, true)
+	f.addBucket("public", "us-west-2", f.account, false)
+	f.addBucket("other-account", "us-west-2", "444455556666", true)
 	for _, args := range [][]string{
 		{"init", "-aws", "theirs", "-region", "eu-central-1"}, // in another region
+		{"init", "-aws", "public"},
+		{"init", "-aws", "other-account"},
 		{"init", "-aws", "Bad_Bucket"},
 		{"init", "-aws", "ok-bucket/../x"},
 		{"init", "-aws", "ok-bucket/a/./x"},
@@ -282,7 +374,8 @@ func TestEnv(t *testing.T) {
 		"SESH_STORE=s3://env-bucket/default\n" +
 		"SESH_AWS_ACCESS_KEY_ID=" + cfg["aws_access_key_id"] + "\n" +
 		"SESH_AWS_SECRET_ACCESS_KEY=" + cfg["aws_secret_access_key"] + "\n" +
-		"SESH_AWS_REGION=eu-west-1\n"
+		"SESH_AWS_REGION=eu-west-1\n" +
+		"SESH_AWS_ACCOUNT_ID=111122223333\n"
 	if out != want {
 		t.Errorf("env printed:\n%s\nwant:\n%s", out, want)
 	}

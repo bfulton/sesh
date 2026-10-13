@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -104,6 +105,7 @@ var configKeys = []struct{ key, env string }{
 	{"aws_secret_access_key", "SESH_AWS_SECRET_ACCESS_KEY"},
 	{"aws_session_token", "SESH_AWS_SESSION_TOKEN"},
 	{"aws_region", "SESH_AWS_REGION"},
+	{"aws_account_id", "SESH_AWS_ACCOUNT_ID"},
 	{"aws_endpoint_url_s3", "SESH_AWS_ENDPOINT_URL_S3"},
 	{"s3_path_style", "SESH_S3_PATH_STYLE"},
 }
@@ -173,8 +175,12 @@ func s3Config() store.S3Config {
 		Region:          setting("aws_region"),
 		Endpoint:        setting("aws_endpoint_url_s3"),
 		PathStyle:       setting("s3_path_style") != "",
+		AccountID:       setting("aws_account_id"),
 	}
 }
+
+// checkAllBuckets has openStore check S3 stores other than AWS's, for tests.
+var checkAllBuckets bool
 
 // openStore opens the configured store. For a sesh server it authenticates
 // with the token derived from the vault key, if there is one.
@@ -186,6 +192,13 @@ func openStore() (store.Store, error) {
 	st, err := store.Open(u, s3Config())
 	if err != nil {
 		return nil, err
+	}
+	// An AWS bucket must not be public, which may have changed since init.
+	// Other S3-compatible stores have no Block Public Access to ask about.
+	if s, ok := st.(*store.S3); ok && (setting("aws_endpoint_url_s3") == "" || checkAllBuckets) {
+		if err := s.CheckPrivate(context.Background()); err != nil {
+			return nil, err
+		}
 	}
 	if r, ok := st.(*store.Remote); ok {
 		if v, _ := loadVault(); v != nil {

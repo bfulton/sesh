@@ -42,6 +42,10 @@ func TestSDKBucketRegion(t *testing.T) {
 	a := sdkAdminAt(t, "", func(w http.ResponseWriter, r *http.Request) {
 		region := signed(r)
 		asked = append(asked, r.URL.Path+"@"+region)
+		if r.Header.Get("X-Amz-Expected-Bucket-Owner") != "111122223333" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		switch r.URL.Path {
 		case "/elsewhere":
 			w.Header().Set("X-Amz-Bucket-Region", "ap-south-1")
@@ -61,9 +65,9 @@ func TestSDKBucketRegion(t *testing.T) {
 		{"elsewhere", "ap-south-1", ""},
 		{"here", "us-east-1", ""},
 		{"none", "", ""},
-		{"theirs", "", "another account"},
+		{"theirs", "", "not in your AWS account 111122223333"},
 	} {
-		got, err := a.BucketRegion(ctx, c.bucket)
+		got, err := a.BucketRegion(ctx, c.bucket, "111122223333")
 		if got != c.want || (err == nil) != (c.err == "") || err != nil && !strings.Contains(err.Error(), c.err) {
 			t.Errorf("BucketRegion(%s) = %q, %v; want %q, %q", c.bucket, got, err, c.want, c.err)
 		}
@@ -131,5 +135,38 @@ func TestSDKIAM(t *testing.T) {
 	}
 	if strings.Join(actions, " ") != "CreateUser:sesh-b-v:/sesh/ PutUserPolicy:sesh-b-v: CreateAccessKey:sesh-b-v:" {
 		t.Errorf("actions %v", actions)
+	}
+}
+
+func TestSDKBlockPublicAccess(t *testing.T) {
+	var got string
+	a := sdkAdminAt(t, "us-east-1", func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		got = r.Method + " " + r.URL.String() + " " + r.Header.Get("X-Amz-Expected-Bucket-Owner") + " " + string(b)
+	})
+	if err := a.BlockPublicAccess(context.Background(), "b1", "us-east-1", "111122223333"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"PUT /b1?publicAccessBlock", " 111122223333 ",
+		"<BlockPublicAcls>true</BlockPublicAcls>", "<IgnorePublicAcls>true</IgnorePublicAcls>",
+		"<BlockPublicPolicy>true</BlockPublicPolicy>", "<RestrictPublicBuckets>true</RestrictPublicBuckets>"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("request lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestSDKAccountID(t *testing.T) {
+	a := sdkAdminAt(t, "", func(w http.ResponseWriter, r *http.Request) {
+		r.ParseForm()
+		if r.Form.Get("Action") != "GetCallerIdentity" {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/xml")
+		io.WriteString(w, `<GetCallerIdentityResponse><GetCallerIdentityResult><Arn>arn:aws:iam::111122223333:user/admin</Arn><UserId>X</UserId><Account>111122223333</Account></GetCallerIdentityResult></GetCallerIdentityResponse>`)
+	})
+	if id, err := a.AccountID(context.Background()); err != nil || id != "111122223333" {
+		t.Errorf("AccountID = %q, %v", id, err)
 	}
 }

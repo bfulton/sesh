@@ -55,7 +55,7 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 
 | File | Holds |
 | --- | --- |
-| `VAULT/config` | `key=value` settings: `store`, `redact`, and the S3 settings `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`, `aws_region`, `aws_endpoint_url_s3` and `s3_path_style`. Each variable below overrides its setting |
+| `VAULT/config` | `key=value` settings: `store`, `redact`, and the S3 settings `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`, `aws_region`, `aws_account_id`, `aws_endpoint_url_s3` and `s3_path_style`. Each variable below overrides its setting |
 | `VAULT/key` | The vault key |
 | `VAULT/state.json` | Each transcript's size and modification time at its last sync |
 | `VAULT/cache/` | This device's decrypted copy of the vault |
@@ -77,6 +77,7 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `SESH_AWS_ACCESS_KEY_ID`, `SESH_AWS_SECRET_ACCESS_KEY` | S3 credentials; required for an `s3://` store |
 | `SESH_AWS_SESSION_TOKEN` | Session token, for temporary S3 credentials |
 | `SESH_AWS_REGION` | S3 region (default `auto`) |
+| `SESH_AWS_ACCOUNT_ID` | The AWS account that must own the bucket; sesh refuses a bucket of any other |
 | `SESH_AWS_ENDPOINT_URL_S3` | S3 endpoint, for stores other than AWS such as R2 or MinIO |
 | `SESH_S3_PATH_STYLE` | Any value turns on path-style S3 addressing, for stores that need it |
 
@@ -86,13 +87,21 @@ An `s3://` store uses these settings only, never the `AWS_` variables or the sha
 
 `sesh init -aws BUCKET[/PREFIX] [VAULT]` sets up a vault's S3 storage with the AWS credentials and region other AWS tools use, such as `AWS_PROFILE` or `~/.aws/credentials`. They need to create buckets and IAM users, and are used for nothing else.
 
-1. If there is no bucket `BUCKET`, it creates one in `-region`, else the configured region, else `us-east-1`. An existing bucket keeps its region.
+1. If there is no bucket `BUCKET`, it creates one in `-region`, else the configured region, else `us-east-1`, and turns on all four of its Block Public Access settings. An existing bucket keeps its region. It must belong to the credentials' account, and must already block public access [as below](#public-buckets).
 2. It creates the IAM user `sesh-BUCKET-PREFIX-VAULT` (with `/` as `-`; a name past IAM's 64 characters becomes `sesh-VAULT-` and a hash), under the path `/sesh/`, unless it exists.
-3. It gives the user one inline policy, `sesh`: `s3:GetObject` and `s3:PutObject` on `BUCKET/PREFIX/VAULT/*`, and `s3:ListBucket` on the bucket for keys under that prefix. sesh never deletes, so the user can't either.
-4. It creates an access key for the user, unless the vault's `config` already has one for this store, and writes it there with the store and region.
-5. It waits, up to 90 seconds, until the new key can list the vault's prefix: IAM takes a few seconds to make a new key work.
+3. It gives the user one inline policy, `sesh`: `s3:GetObject` and `s3:PutObject` on `BUCKET/PREFIX/VAULT/*`, `s3:ListBucket` on the bucket for keys under that prefix, and `s3:GetBucketPublicAccessBlock` on the bucket. sesh never deletes, so the user can't either.
+4. It creates an access key for the user, unless the vault's `config` already has one for this store, and writes it there with the store, region and account.
+5. It waits, up to 90 seconds, until the new key can list the vault's prefix and read the bucket's Block Public Access settings: IAM takes a few seconds to make a new key work.
 
 Running it again resets the policy and keeps the key. Each vault in a bucket has its own user, so a vault's key can't reach another vault's objects.
+
+### Public buckets
+
+sesh refuses an AWS bucket that could be public, at `sesh init -aws` and again every time a command opens the store, so a bucket made public later is caught. The bucket must have all four Block Public Access settings on (`BlockPublicAcls`, `IgnorePublicAcls`, `BlockPublicPolicy`, `RestrictPublicBuckets`), which together keep ACLs and bucket policies from granting public access; the refusal prints the `aws` command that turns them on. Objects are encrypted, but in a public bucket their names, sizes and times would show, and anyone could add or overwrite them. Credentials that can't read the settings are refused too, since the bucket can't be shown to be private.
+
+With `aws_account_id` set, which `sesh init -aws` does, every request also names the account that must own the bucket, so sesh never reads or writes a bucket of the same name in another account.
+
+These checks are for AWS. For a store with `aws_endpoint_url_s3`, such as R2 or MinIO, which has no Block Public Access, keeping the bucket private is up to you.
 
 ## Secrets
 
