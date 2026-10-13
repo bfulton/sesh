@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-13
+
 ### Added
 
 - Saves replace the secrets they find with placeholders, such as
@@ -18,7 +20,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
   `SESH_REDACT=off`, saves secrets as they are.
 - A save no longer records credentials in its repository's remote URL,
   such as a token in an HTTPS remote or its query.
-
 - The `list_messages` MCP tool lists every message of one kind, by default
   everything the user wrote, with the total count, so an agent can answer
   questions about a whole history, such as how often something happens,
@@ -109,5 +110,6 @@ The first release.
   which could be another tool of the same name or a different version. It
   runs `SESH_BIN`, or the copy it installed.
 
-[Unreleased]: https://github.com/bfulton/sesh/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/bfulton/sesh/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/bfulton/sesh/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/bfulton/sesh/releases/tag/v0.3.0

@@ -12,7 +12,7 @@
 # SESH_BIN to use your own build.
 set -u
 
-VERSION="${SESH_VERSION:-v0.3.0}"   # a release tag, downloaded, or any module version, built; installed once per value
+VERSION="${SESH_VERSION:-v0.4.0}"   # a release tag, downloaded, or any module version, built; installed once per value
 RELEASES="${SESH_RELEASES:-https://github.com/bfulton/sesh/releases/download}"
 DATA="${CLAUDE_PLUGIN_DATA:-$HOME/.sesh/plugin}"
 BIN="$DATA/bin/sesh"
