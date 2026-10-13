@@ -6,6 +6,21 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Changed
+
+- Building sesh needs Go 1.26.9 or later, the newest patch of the oldest Go
+  release that still gets fixes. Go 1.24 no longer does, and the fixed
+  versions of golang.org/x/crypto, x/text and x/sys need Go 1.26. CI and the
+  Release workflow build with the version go.mod names.
+
+### Security
+
+- Every dependency is at its newest version, including golang.org/x/crypto
+  v0.58.0, x/text v0.43.0, x/sys v0.49.0 and github.com/nwaples/rardecode
+  v2.4.4, which fix the advisories Dependabot reported. govulncheck finds no
+  vulnerability in code sesh calls or packages it imports; one advisory in
+  x/crypto, GO-2026-5932, has no fixed version yet.
+
 ## [0.4.0] - 2026-10-13
 
 ### Added
