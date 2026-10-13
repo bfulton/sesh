@@ -40,7 +40,7 @@ That puts `sesh` in `~/go/bin`. Add that folder to your `PATH`, or use the full 
    sesh init -key VAULT_KEY -store STORAGE_URL
    ```
 
-3. For Claude Code on the web, set `SESH_KEY` and `SESH_STORE` in your cloud environment's variables. For an S3-compatible bucket, also set its credentials; see [the configuration reference](docs/reference.md#configuration).
+3. For Claude Code on the web, set `SESH_KEY` and `SESH_STORE` in your cloud environment's variables. For an S3-compatible bucket, also set `SESH_AWS_ACCESS_KEY_ID` and `SESH_AWS_SECRET_ACCESS_KEY`; see [the configuration reference](docs/reference.md#configuration).
 
 4. Optional: let any Claude Code session search your sessions without the plugin:
 

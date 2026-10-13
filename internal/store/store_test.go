@@ -91,3 +91,51 @@ func TestOpen(t *testing.T) {
 		}
 	}
 }
+
+// NewS3 reads sesh's own variables, and none of the AWS_ ones other tools
+// share.
+func TestNewS3FromSeshVariables(t *testing.T) {
+	backend := s3mem.New()
+	srv := httptest.NewServer(gofakes3.New(backend).Server())
+	defer srv.Close()
+	if err := backend.CreateBucket("sesh-test"); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"SESH_AWS_ACCESS_KEY_ID", "SESH_AWS_SECRET_ACCESS_KEY", "SESH_AWS_SESSION_TOKEN", "SESH_AWS_REGION", "SESH_AWS_ENDPOINT_URL_S3", "SESH_S3_PATH_STYLE"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("AWS_ACCESS_KEY_ID", "aws-id")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
+	t.Setenv("AWS_REGION", "eu-west-1")
+	t.Setenv("AWS_ENDPOINT_URL_S3", "http://aws.invalid")
+	if _, err := NewS3("sesh-test", "team"); err == nil {
+		t.Fatal("NewS3 used the AWS_ variables")
+	}
+
+	t.Setenv("SESH_AWS_ACCESS_KEY_ID", "sesh-id")
+	t.Setenv("SESH_AWS_SECRET_ACCESS_KEY", "sesh-secret")
+	t.Setenv("SESH_AWS_ENDPOINT_URL_S3", srv.URL)
+	t.Setenv("SESH_S3_PATH_STYLE", "1")
+	s, err := NewS3("sesh-test", "team")
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := s.Client.Options()
+	creds, err := o.Credentials.Retrieve(context.Background())
+	if err != nil || creds.AccessKeyID != "sesh-id" || creds.SecretAccessKey != "sesh-secret" {
+		t.Errorf("credentials %q, %v; want sesh-id", creds.AccessKeyID, err)
+	}
+	if o.Region != "auto" || aws.ToString(o.BaseEndpoint) != srv.URL || !o.UsePathStyle {
+		t.Errorf("region %q, endpoint %q, path style %v", o.Region, aws.ToString(o.BaseEndpoint), o.UsePathStyle)
+	}
+	Exercise(t, s)
+
+	t.Setenv("SESH_AWS_REGION", "us-west-2")
+	if s, _ := NewS3("sesh-test", ""); s.Client.Options().Region != "us-west-2" {
+		t.Errorf("SESH_AWS_REGION ignored")
+	}
+	t.Setenv("SESH_AWS_SECRET_ACCESS_KEY", "")
+	if _, err := NewS3("sesh-test", ""); err == nil {
+		t.Error("NewS3 accepted an access key ID without its secret")
+	}
+}

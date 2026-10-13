@@ -10,16 +10,18 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	"github.com/aws/aws-sdk-go-v2/config"
+	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// S3 is a store in an S3-compatible bucket. It uses the AWS SDK's standard
-// configuration: credentials from AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY
-// (or any other SDK source), AWS_REGION (default "auto"), and
-// AWS_ENDPOINT_URL_S3 for non-AWS stores such as R2 or MinIO. Set
-// SESH_S3_PATH_STYLE=1 for stores that need path-style addressing.
+// S3 is a store in an S3-compatible bucket. sesh configures it from its own
+// variables only, never from the AWS_ variables or shared config files
+// other AWS tools read: SESH_AWS_ACCESS_KEY_ID and SESH_AWS_SECRET_ACCESS_KEY
+// (required), SESH_AWS_SESSION_TOKEN for temporary credentials,
+// SESH_AWS_REGION (default "auto"), SESH_AWS_ENDPOINT_URL_S3 for non-AWS
+// stores such as R2 or MinIO, and SESH_S3_PATH_STYLE=1 for stores that need
+// path-style addressing.
 type S3 struct {
 	Client *s3.Client
 	Bucket string
@@ -28,18 +30,22 @@ type S3 struct {
 
 // NewS3 returns an S3 store configured from the environment.
 func NewS3(bucket, prefix string) (*S3, error) {
-	opts := []func(*config.LoadOptions) error{}
-	if os.Getenv("AWS_REGION") == "" && os.Getenv("AWS_DEFAULT_REGION") == "" {
-		opts = append(opts, config.WithRegion("auto"))
+	id, secret := os.Getenv("SESH_AWS_ACCESS_KEY_ID"), os.Getenv("SESH_AWS_SECRET_ACCESS_KEY")
+	if id == "" || secret == "" {
+		return nil, errors.New("an s3 store needs SESH_AWS_ACCESS_KEY_ID and SESH_AWS_SECRET_ACCESS_KEY")
 	}
-	cfg, err := config.LoadDefaultConfig(context.Background(), opts...)
-	if err != nil {
-		return nil, err
+	o := s3.Options{
+		Region:       "auto",
+		Credentials:  credentials.NewStaticCredentialsProvider(id, secret, os.Getenv("SESH_AWS_SESSION_TOKEN")),
+		UsePathStyle: os.Getenv("SESH_S3_PATH_STYLE") != "",
 	}
-	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
-		o.UsePathStyle = os.Getenv("SESH_S3_PATH_STYLE") != ""
-	})
-	return &S3{Client: client, Bucket: bucket, Prefix: strings.Trim(prefix, "/")}, nil
+	if r := os.Getenv("SESH_AWS_REGION"); r != "" {
+		o.Region = r
+	}
+	if e := os.Getenv("SESH_AWS_ENDPOINT_URL_S3"); e != "" {
+		o.BaseEndpoint = aws.String(e)
+	}
+	return &S3{Client: s3.New(o), Bucket: bucket, Prefix: strings.Trim(prefix, "/")}, nil
 }
 
 func (s *S3) key(name string) string {

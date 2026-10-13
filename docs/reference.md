@@ -73,9 +73,12 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `SESH_VERSION` | The version the plugin installs: a release tag, downloaded, or any tag, branch or commit, built with `go install` (default: the plugin's release) |
 | `SESH_RELEASES` | Where the plugin downloads releases from (default `https://github.com/bfulton/sesh/releases/download`) |
 | `SESH_S3_PATH_STYLE` | Any value turns on path-style S3 addressing, for stores that need it |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | S3 credentials, or any other source the AWS SDK reads |
-| `AWS_REGION` or `AWS_DEFAULT_REGION` | S3 region (default `auto`) |
-| `AWS_ENDPOINT_URL_S3` | S3 endpoint, for stores other than AWS such as R2 or MinIO |
+| `SESH_AWS_ACCESS_KEY_ID`, `SESH_AWS_SECRET_ACCESS_KEY` | S3 credentials; required for an `s3://` store |
+| `SESH_AWS_SESSION_TOKEN` | Session token, for temporary S3 credentials |
+| `SESH_AWS_REGION` | S3 region (default `auto`) |
+| `SESH_AWS_ENDPOINT_URL_S3` | S3 endpoint, for stores other than AWS such as R2 or MinIO |
+
+sesh reads S3 settings from these variables only, never from the `AWS_` variables or the shared AWS config files that other AWS tools read, so the two can't mix.
 
 ## Secrets
 
