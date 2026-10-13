@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"sort"
 	"strings"
 
@@ -15,44 +14,48 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 )
 
-// S3 is a store in an S3-compatible bucket. sesh configures it from its own
-// variables only, never from the AWS_ variables or shared config files
-// other AWS tools read: SESH_AWS_ACCESS_KEY_ID and SESH_AWS_SECRET_ACCESS_KEY
-// (required), SESH_AWS_SESSION_TOKEN for temporary credentials,
-// SESH_AWS_REGION (default "auto"), SESH_AWS_ENDPOINT_URL_S3 for non-AWS
-// stores such as R2 or MinIO, and SESH_S3_PATH_STYLE=1 for stores that need
-// path-style addressing.
+// S3 is a store in an S3-compatible bucket.
 type S3 struct {
 	Client *s3.Client
 	Bucket string
 	Prefix string // key prefix within the bucket, without leading or trailing slash
 }
 
-// NewS3 returns an S3 store configured from the environment.
-func NewS3(bucket, prefix string) (*S3, error) {
-	id, secret := os.Getenv("SESH_AWS_ACCESS_KEY_ID"), os.Getenv("SESH_AWS_SECRET_ACCESS_KEY")
-	if id == "" || secret == "" {
-		return nil, errors.New("an s3 store needs SESH_AWS_ACCESS_KEY_ID and SESH_AWS_SECRET_ACCESS_KEY")
+// S3Config is an S3 store's credentials and endpoint. sesh fills it from its
+// own settings only, never from the AWS_ variables or shared config files
+// other AWS tools read.
+type S3Config struct {
+	AccessKeyID, SecretAccessKey string // required
+	SessionToken                 string // for temporary credentials
+	Region                       string // default "auto"
+	Endpoint                     string // for stores other than AWS, such as R2 or MinIO
+	PathStyle                    bool   // for stores that need path-style addressing
+}
+
+// NewS3 returns an S3 store for a bucket and key prefix.
+func NewS3(bucket, prefix string, c S3Config) (*S3, error) {
+	if c.AccessKeyID == "" || c.SecretAccessKey == "" {
+		return nil, errors.New("an s3 store needs credentials: run sesh init -aws, or set SESH_AWS_ACCESS_KEY_ID and SESH_AWS_SECRET_ACCESS_KEY")
 	}
 	o := s3.Options{
 		Region:       "auto",
-		Credentials:  credentials.NewStaticCredentialsProvider(id, secret, os.Getenv("SESH_AWS_SESSION_TOKEN")),
-		UsePathStyle: os.Getenv("SESH_S3_PATH_STYLE") != "",
+		Credentials:  credentials.NewStaticCredentialsProvider(c.AccessKeyID, c.SecretAccessKey, c.SessionToken),
+		UsePathStyle: c.PathStyle,
 	}
-	if r := os.Getenv("SESH_AWS_REGION"); r != "" {
-		o.Region = r
+	if c.Region != "" {
+		o.Region = c.Region
 	}
-	if e := os.Getenv("SESH_AWS_ENDPOINT_URL_S3"); e != "" {
-		o.BaseEndpoint = aws.String(e)
+	if c.Endpoint != "" {
+		o.BaseEndpoint = aws.String(c.Endpoint)
 	}
 	return &S3{Client: s3.New(o), Bucket: bucket, Prefix: strings.Trim(prefix, "/")}, nil
 }
 
 func (s *S3) key(name string) string {
 	if s.Prefix == "" {
-		return "sesh/" + name
+		return name
 	}
-	return s.Prefix + "/sesh/" + name
+	return s.Prefix + "/" + name
 }
 
 func (s *S3) Put(ctx context.Context, name string, data []byte) error {

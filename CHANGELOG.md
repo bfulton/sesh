@@ -6,7 +6,25 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Added
+
+- `sesh init -aws BUCKET[/PREFIX]` sets up S3 storage with your own AWS
+  credentials: it makes the bucket if there is none, and an IAM user whose
+  policy lets it read, write and list the vault's prefix alone, and saves
+  that user's access key in the vault's settings.
+- Named vaults. `sesh init NAME` sets up a vault in `~/.sesh/NAME`, stored
+  under `NAME` in the bucket, and `SESH_VAULT=NAME` selects it. The first
+  vault is `default`.
+- `sesh env` prints the variables that give a cloud environment your vault.
+
 ### Changed
+
+- Each vault's settings and local state are in `~/.sesh/<vault>/`; the
+  shared `~/.sesh/config` and `~/.sesh/key` are gone. The vault's `config`
+  holds its S3 settings too, and the `SESH_` variables override them.
+- An s3 store keeps its objects directly under its prefix, no longer under
+  `PREFIX/sesh/`. To keep reading a store set up before, add `/sesh` to its
+  URL.
 
 - An S3 store is configured from sesh's own variables only:
   `SESH_AWS_ACCESS_KEY_ID`, `SESH_AWS_SECRET_ACCESS_KEY`,

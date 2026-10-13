@@ -6,7 +6,8 @@ Commands, settings and formats. For how to set up and use sesh, see the [README]
 
 | Command | Does |
 | --- | --- |
-| `sesh init [-store URL] [-key KEY]` | Creates a vault key, or uses `KEY` from another device, and records the storage URL. Inside Claude Code it doesn't print the key; in a cloud session it refuses |
+| `sesh init [-store URL \| -aws BUCKET[/PREFIX] [-region REGION]] [-key KEY] [VAULT]` | Creates the vault `VAULT` (default `default`) in `~/.sesh/VAULT`, with a new vault key or `KEY` from another device, and records its storage: `URL`, a folder in the vault's own (`file://~/.sesh/VAULT/store`), or with `-aws`, `s3://BUCKET/PREFIX/VAULT`, set up as [below](#aws). Inside Claude Code it doesn't print the key; in a cloud session it refuses |
+| `sesh env` | Prints the variables that give a cloud environment this vault: `SESH_KEY`, `SESH_STORE` and the S3 settings. Refuses inside Claude Code, and for a store on this device |
 | `sesh key` | Prints the vault key. Refuses inside Claude Code, whose transcript would keep it |
 | `sesh status` | Shows the vault, the storage URL with any credentials hidden, whether redaction is on, and the last hook run |
 | `sesh version` | Prints the release this binary was built for, or `dev` |
@@ -50,35 +51,48 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 
 ## Configuration
 
-`~/.sesh/`, or `$SESH_HOME`, holds:
+`~/.sesh/`, or `$SESH_HOME`, holds a folder for each vault. sesh uses the vault `SESH_VAULT` names, else `default`. A vault's name has up to 32 lowercase letters, digits, `-` and `_`.
 
 | File | Holds |
 | --- | --- |
-| `config` | `store=URL`, and `redact=off` to save secrets as they are |
-| `key` | The vault key |
-| `state.json` | Each transcript's size and modification time at its last sync |
+| `VAULT/config` | `key=value` settings: `store`, `redact`, and the S3 settings `aws_access_key_id`, `aws_secret_access_key`, `aws_session_token`, `aws_region`, `aws_endpoint_url_s3` and `s3_path_style`. Each variable below overrides its setting |
+| `VAULT/key` | The vault key |
+| `VAULT/state.json` | Each transcript's size and modification time at its last sync |
+| `VAULT/cache/` | This device's decrypted copy of the vault |
+| `VAULT/scanned/` | For each session, named by a hash of its id, hashes of the content already scanned for secrets, and redacted copies of what held secrets; never a secret |
+| `VAULT/tokens/` | Share tokens for sessions saved without a vault |
 | `hook-status.json` | The result of every hook run |
-| `cache/` | This device's decrypted copy of the vault |
-| `scanned/` | For each session, named by a hash of its id, hashes of the content already scanned for secrets, and redacted copies of what held secrets; never a secret |
-| `tokens/` | Share tokens for sessions saved without a vault |
 
 | Environment variable | Effect |
 | --- | --- |
-| `SESH_STORE` | Storage URL; overrides `config` |
+| `SESH_VAULT` | The vault to use (default `default`) |
+| `SESH_STORE` | Storage URL; overrides `store` |
 | `SESH_KEY` | Vault key; overrides `key` |
 | `SESH_HOME` | Replaces `~/.sesh` |
 | `SESH_BUDGET` | Size of a rendered history, in bytes (default 100000) |
-| `SESH_REDACT` | `off` saves secrets as they are; overrides `config` |
+| `SESH_REDACT` | `off` saves secrets as they are; overrides `redact` |
 | `SESH_BIN` | The plugin uses this sesh binary |
 | `SESH_VERSION` | The version the plugin installs: a release tag, downloaded, or any tag, branch or commit, built with `go install` (default: the plugin's release) |
 | `SESH_RELEASES` | Where the plugin downloads releases from (default `https://github.com/bfulton/sesh/releases/download`) |
-| `SESH_S3_PATH_STYLE` | Any value turns on path-style S3 addressing, for stores that need it |
 | `SESH_AWS_ACCESS_KEY_ID`, `SESH_AWS_SECRET_ACCESS_KEY` | S3 credentials; required for an `s3://` store |
 | `SESH_AWS_SESSION_TOKEN` | Session token, for temporary S3 credentials |
 | `SESH_AWS_REGION` | S3 region (default `auto`) |
 | `SESH_AWS_ENDPOINT_URL_S3` | S3 endpoint, for stores other than AWS such as R2 or MinIO |
+| `SESH_S3_PATH_STYLE` | Any value turns on path-style S3 addressing, for stores that need it |
 
-sesh reads S3 settings from these variables only, never from the `AWS_` variables or the shared AWS config files that other AWS tools read, so the two can't mix.
+An `s3://` store uses these settings only, never the `AWS_` variables or the shared AWS config files that other AWS tools read, so the two can't mix. Only `sesh init -aws` uses those, to set the store up.
+
+### AWS
+
+`sesh init -aws BUCKET[/PREFIX] [VAULT]` sets up a vault's S3 storage with the AWS credentials and region other AWS tools use, such as `AWS_PROFILE` or `~/.aws/credentials`. They need to create buckets and IAM users, and are used for nothing else.
+
+1. If there is no bucket `BUCKET`, it creates one in `-region`, else the configured region, else `us-east-1`. An existing bucket keeps its region.
+2. It creates the IAM user `sesh-BUCKET-PREFIX-VAULT` (with `/` as `-`; a name past IAM's 64 characters becomes `sesh-VAULT-` and a hash), under the path `/sesh/`, unless it exists.
+3. It gives the user one inline policy, `sesh`: `s3:GetObject` and `s3:PutObject` on `BUCKET/PREFIX/VAULT/*`, and `s3:ListBucket` on the bucket for keys under that prefix. sesh never deletes, so the user can't either.
+4. It creates an access key for the user, unless the vault's `config` already has one for this store, and writes it there with the store and region.
+5. It waits, up to 90 seconds, until the new key can list the vault's prefix: IAM takes a few seconds to make a new key work.
+
+Running it again resets the policy and keeps the key. Each vault in a bucket has its own user, so a vault's key can't reach another vault's objects.
 
 ## Secrets
 
@@ -96,7 +110,7 @@ A save also never keeps credentials in the remote URL it records: its user infor
 
 Rules can match text that isn't a secret, such as a test fixture with a private key. To save everything as it is, set `redact=off` in `config` or `SESH_REDACT=off`.
 
-The first save of a session scans all of it, at roughly 1 MB a second. `~/.sesh/scanned/` remembers what was clean, and keeps redacted copies of what held secrets, so later saves scan only what changed. The `Stop` hook spends at most 3 minutes scanning, and `/sesh save` 2 minutes; a save out of time uploads nothing, keeps what it scanned, and the next save carries on.
+The first save of a session scans all of it, at roughly 1 MB a second. `~/.sesh/VAULT/scanned/` remembers what was clean, and keeps redacted copies of what held secrets, so later saves scan only what changed. The `Stop` hook spends at most 3 minutes scanning, and `/sesh save` 2 minutes; a save out of time uploads nothing, keeps what it scanned, and the next save carries on.
 
 ## Storage
 
@@ -106,7 +120,7 @@ The first save of a session scans all of it, at roughly 1 MB a second. `~/.sesh/
 | `s3://bucket/prefix` | An S3-compatible bucket |
 | `https://host` | A sesh server |
 
-Objects are kept under `sesh/`:
+Objects are named, under an s3 store's prefix:
 
 ```
 v1/s/<archive id>               one session's archive, sealed under its share token
