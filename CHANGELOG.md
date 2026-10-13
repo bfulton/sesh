@@ -29,6 +29,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 - Building sesh needs Go 1.24.11 or later, which gitleaks requires.
 
+### Security
+
+- github.com/ulikunitz/xz is v0.5.15 and github.com/klauspost/compress
+  v1.18.7, which fix GO-2025-3922 and GO-2026-5841. Both came with gitleaks;
+  govulncheck finds no vulnerable code that sesh calls.
+
 ### Fixed
 
 - The Release workflow adds the binaries to a release created on GitHub's
