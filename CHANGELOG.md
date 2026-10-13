@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Fixed
+
+- The MCP server sees a session restored on this device at once. It missed
+  one restored within a few milliseconds of its last read until its next
+  pull, up to a minute later, because it compared the cache folder's
+  modification time, which comes from a coarse clock, with its own.
+
 ## [0.4.0] - 2026-10-13
 
 ### Added

@@ -2,6 +2,7 @@ package library
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -38,7 +39,8 @@ type cached struct {
 
 // Library is the local copy of a vault and its index.
 type Library struct {
-	Dir      string        // the cache folder; it changes when a session is added
+	Dir      string        // the cache folder
+	Version  string        // its version when read; see ReadVersion
 	Entries  []vault.Entry // most recently active first
 	sessions map[string]*cached
 	index    *Index
@@ -53,11 +55,14 @@ func Open(ctx context.Context, st store.Store, v *vault.Vault, cacheDir string, 
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, err
 	}
+	// Read before the cache, so that a session added while it's read
+	// shows as a new version.
+	version := ReadVersion(dir)
 	local, err := loadCache(dir)
 	if err != nil {
 		return nil, err
 	}
-	lib := &Library{Dir: dir, sessions: local}
+	lib := &Library{Dir: dir, Version: version, sessions: local}
 	if pull {
 		entries, bad, err := v.List(ctx, st)
 		if err != nil {
@@ -210,7 +215,36 @@ func writeCached(dir string, c *cached) error {
 	if err := os.WriteFile(tmp, data, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, p)
+	if err := os.Rename(tmp, p); err != nil {
+		return err
+	}
+	return newVersion(dir)
+}
+
+// versionFile holds a random value that changes whenever a session is
+// written to the cache, so that a reader, such as the MCP server, sees
+// another process's restore at once. Modification times don't serve: they
+// come from a coarse clock, and a write just after a read can carry an
+// earlier time than the read's.
+const versionFile = "version"
+
+// ReadVersion returns the version of the cache folder dir; it's "" until a
+// session is first written.
+func ReadVersion(dir string) string {
+	data, _ := os.ReadFile(filepath.Join(dir, versionFile))
+	return string(data)
+}
+
+func newVersion(dir string) error {
+	var b [16]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return err
+	}
+	p := filepath.Join(dir, versionFile)
+	if err := os.WriteFile(p+".tmp", []byte(hex.EncodeToString(b[:])), 0o600); err != nil {
+		return err
+	}
+	return os.Rename(p+".tmp", p)
 }
 
 func (l *Library) buildIndex() {

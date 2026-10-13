@@ -201,6 +201,23 @@ func TestRemember(t *testing.T) {
 	if len(lib.SearchMessages("base58", 5)) != 1 || len(lib.SearchMessages("crockford", 5)) != 0 {
 		t.Errorf("want the later save cached, not the older one")
 	}
+	// The cache's version changes when a session is written, and only then.
+	v := lib.Version
+	if v == "" || ReadVersion(lib.Dir) != v {
+		t.Fatalf("version %q, read back %q", v, ReadVersion(lib.Dir))
+	}
+	if err := Remember(cache, mine, tok, old); err != nil {
+		t.Fatal(err)
+	}
+	if ReadVersion(lib.Dir) != v {
+		t.Error("the version changed though nothing was written")
+	}
+	time.Sleep(10 * time.Millisecond)
+	save("Then base62.")
+	remember(tok)
+	if ReadVersion(lib.Dir) == v {
+		t.Error("the version didn't change when a session was written")
+	}
 }
 
 // A share token's archive names its own session id. One claiming the id of a

@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -139,5 +140,40 @@ func TestMCPSeesRestoredSession(t *testing.T) {
 	}
 	if lib, err := srv.library(ctx); err != nil || len(lib.Find("theirs")) != 1 {
 		t.Fatalf("restored session not visible: %v", err)
+	}
+}
+
+// Sessions restored one right after another are each visible at once,
+// however close a restore comes to the server's last read.
+func TestMCPSeesEveryRestore(t *testing.T) {
+	ctx := context.Background()
+	home := t.TempDir()
+	t.Setenv("SESH_HOME", home)
+	key, _ := token.New()
+	t.Setenv("SESH_KEY", key.String())
+	t.Setenv("SESH_STORE", "file://"+filepath.Join(home, "store"))
+	st := &store.Dir{Root: filepath.Join(home, "store")}
+	srv := &mcpServer{}
+	if _, err := srv.library(ctx); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 100; i++ {
+		id := fmt.Sprintf("restored-%d", i)
+		tp := filepath.Join(home, id+".jsonl")
+		os.WriteFile(tp, []byte(`{"type":"user","message":{"role":"user","content":"Session `+id+`."}}`+"\n"), 0o600)
+		saved, err := sesh.Save(ctx, sesh.SaveOptions{Store: st, SessionID: id, TranscriptPath: tp, SkipWorktree: true, TokenDir: filepath.Join(home, "tokens")})
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := sesh.Fetch(ctx, st, saved.Token)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := library.Remember(filepath.Join(home, "cache"), &vault.Vault{Key: key}, saved.Token, a); err != nil {
+			t.Fatal(err)
+		}
+		if lib, err := srv.library(ctx); err != nil || len(lib.Find(id)) != 1 {
+			t.Fatalf("restore %d not visible: %v", i, err)
+		}
 	}
 }
