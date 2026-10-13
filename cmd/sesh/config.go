@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bfulton/sesh/internal/sesh"
 	"github.com/bfulton/sesh/internal/store"
@@ -179,6 +181,46 @@ func s3Config() store.S3Config {
 	}
 }
 
+// privateFor is how long a bucket found private stays trusted without
+// asking again. The hook opens the store every turn, and watch every
+// minute; this keeps that to a request an hour, and a bucket made public
+// is still refused within the hour.
+const privateFor = time.Hour
+
+// now is the clock, for tests.
+var now = time.Now
+
+// privateCheck is what checkPrivate remembers of its last pass.
+type privateCheck struct {
+	Store   string    `json:"store"`
+	Owner   string    `json:"owner"`
+	Checked time.Time `json:"checked"`
+}
+
+func privateCheckPath() string { return filepath.Join(vaultDir(), "bucket-checked.json") }
+
+// checkPrivate is s.CheckPrivate, unless the same bucket and owner passed
+// within privateFor. Only a pass is remembered, so a refusal holds until
+// the bucket is fixed.
+func checkPrivate(s *store.S3, storeURL string) error {
+	var last privateCheck
+	if b, err := os.ReadFile(privateCheckPath()); err == nil && json.Unmarshal(b, &last) == nil &&
+		last.Store == storeURL && last.Owner == s.Owner {
+		if age := now().Sub(last.Checked); age >= 0 && age < privateFor {
+			return nil
+		}
+	}
+	if err := s.CheckPrivate(context.Background()); err != nil {
+		os.Remove(privateCheckPath())
+		return err
+	}
+	// Best effort: without it, the next command asks again.
+	if b, err := json.Marshal(privateCheck{storeURL, s.Owner, now()}); err == nil && os.MkdirAll(vaultDir(), 0o700) == nil {
+		os.WriteFile(privateCheckPath(), b, 0o600)
+	}
+	return nil
+}
+
 // checkAllBuckets has openStore check S3 stores other than AWS's, for tests.
 var checkAllBuckets bool
 
@@ -196,7 +238,7 @@ func openStore() (store.Store, error) {
 	// An AWS bucket must not be public, which may have changed since init.
 	// Other S3-compatible stores have no Block Public Access to ask about.
 	if s, ok := st.(*store.S3); ok && (setting("aws_endpoint_url_s3") == "" || checkAllBuckets) {
-		if err := s.CheckPrivate(context.Background()); err != nil {
+		if err := checkPrivate(s, u); err != nil {
 			return nil, err
 		}
 	}

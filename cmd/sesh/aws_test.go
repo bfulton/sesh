@@ -33,6 +33,7 @@ type fakeAWS struct {
 	owners   map[string]string // bucket → account
 	private  map[string]bool   // bucket → all four Block Public Access settings on
 	public   map[string]bool   // bucket → no Block Public Access settings at all
+	checks   atomic.Int32      // GetPublicAccessBlock requests
 	users    map[string]bool
 	policies map[string]string // user → policy document
 	keys     map[string]int    // user → access keys made
@@ -124,6 +125,7 @@ func setupFakeAWS(t *testing.T, refusals int32) *fakeAWS {
 			return
 		}
 		if _, ok := r.URL.Query()["publicAccessBlock"]; ok && r.Method == http.MethodGet {
+			f.checks.Add(1)
 			if f.public[bucket] {
 				s3err(w, http.StatusNotFound, "NoSuchPublicAccessBlockConfiguration")
 				return
@@ -223,17 +225,46 @@ func TestInitAWS(t *testing.T) {
 		t.Errorf("object not under the vault's prefix: %v", err)
 	}
 
-	// A bucket made public since is refused, as is one that changed hands.
+	// A pass is trusted for an hour: within it, opening the store asks
+	// nothing.
+	clock := time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC)
+	oldNow := now
+	t.Cleanup(func() { now = oldNow })
+	now = func() time.Time { return clock }
+	f.checks.Store(0)
+	for range 3 {
+		if _, err := openStore(); err != nil {
+			t.Fatal(err)
+		}
+		clock = clock.Add(10 * time.Minute)
+	}
+	if n := f.checks.Load(); n != 1 {
+		t.Errorf("3 opens within the hour checked %d times, want 1", n)
+	}
+
+	// A bucket made public since is refused once the hour is up, as is one
+	// that changed hands.
 	f.private["my-bucket"] = false
+	if _, err := openStore(); err != nil {
+		t.Errorf("openStore within the hour: %v", err)
+	}
+	clock = clock.Add(time.Hour)
 	if _, err := openStore(); err == nil || !strings.Contains(err.Error(), "IgnorePublicAcls, RestrictPublicBuckets off") {
 		t.Errorf("openStore of a public bucket: %v", err)
 	}
+	// A refusal isn't remembered: fixed, the bucket passes at once.
+	f.private["my-bucket"] = true
+	if _, err := openStore(); err != nil {
+		t.Errorf("openStore of the fixed bucket: %v", err)
+	}
 	f.public["my-bucket"] = true
+	clock = clock.Add(time.Hour)
 	if _, err := openStore(); err == nil || !strings.Contains(err.Error(), "no Block Public Access settings") {
 		t.Errorf("openStore of a bucket without Block Public Access: %v", err)
 	}
 	f.private["my-bucket"], f.public["my-bucket"] = true, false
 	f.owners["my-bucket"] = "444455556666"
+	clock = clock.Add(time.Hour)
 	if _, err := openStore(); err == nil || !strings.Contains(err.Error(), "must belong to AWS account "+f.account) {
 		t.Errorf("openStore of another account's bucket: %v", err)
 	}

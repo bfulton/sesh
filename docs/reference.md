@@ -61,6 +61,7 @@ With the plugin installed, `/sesh COMMAND` runs a sesh command in any Claude Cod
 | `VAULT/cache/` | This device's decrypted copy of the vault |
 | `VAULT/scanned/` | For each session, named by a hash of its id, hashes of the content already scanned for secrets, and redacted copies of what held secrets; never a secret |
 | `VAULT/tokens/` | Share tokens for sessions saved without a vault |
+| `VAULT/bucket-checked.json` | When an AWS bucket last passed the [public access check](#public-buckets) |
 | `hook-status.json` | The result of every hook run |
 
 | Environment variable | Effect |
@@ -97,7 +98,7 @@ Running it again resets the policy and keeps the key. Each vault in a bucket has
 
 ### Public buckets
 
-sesh refuses an AWS bucket that could be public, at `sesh init -aws` and again every time a command opens the store, so a bucket made public later is caught. The bucket must have all four Block Public Access settings on (`BlockPublicAcls`, `IgnorePublicAcls`, `BlockPublicPolicy`, `RestrictPublicBuckets`), which together keep ACLs and bucket policies from granting public access; the refusal prints the `aws` command that turns them on. Objects are encrypted, but in a public bucket their names, sizes and times would show, and anyone could add or overwrite them. Credentials that can't read the settings are refused too, since the bucket can't be shown to be private.
+sesh refuses an AWS bucket that could be public, at `sesh init -aws` and again when a command opens the store, so a bucket made public later is caught. A pass is trusted for an hour (`VAULT/bucket-checked.json`), so the hook, which opens the store every turn, asks about once an hour; a refusal isn't remembered, so a fixed bucket passes at once. The bucket must have all four Block Public Access settings on (`BlockPublicAcls`, `IgnorePublicAcls`, `BlockPublicPolicy`, `RestrictPublicBuckets`), which together keep ACLs and bucket policies from granting public access; the refusal prints the `aws` command that turns them on. Objects are encrypted, but in a public bucket their names, sizes and times would show, and anyone could add or overwrite them. Credentials that can't read the settings are refused too, since the bucket can't be shown to be private.
 
 With `aws_account_id` set, which `sesh init -aws` does, every request also names the account that must own the bucket, so sesh never reads or writes a bucket of the same name in another account.
 
