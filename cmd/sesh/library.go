@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"path"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -24,13 +23,13 @@ func openLibrary(ctx context.Context, pull bool) (*library.Library, error) {
 		return nil, err
 	}
 	if !pull {
-		return library.Open(ctx, nil, v, filepath.Join(seshHome(), "cache"), false)
+		return library.Open(ctx, nil, v, cacheDir(), false)
 	}
 	s, err := openStore()
 	if err != nil {
 		return nil, err
 	}
-	return library.Open(ctx, s, v, filepath.Join(seshHome(), "cache"), true)
+	return library.Open(ctx, s, v, cacheDir(), true)
 }
 
 func libraryFlags(name string) (*flag.FlagSet, *bool) {

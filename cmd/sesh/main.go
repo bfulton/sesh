@@ -2,6 +2,7 @@
 // continue any of them anywhere and search across all of them.
 //
 //	sesh init                  create your vault key and set up storage
+//	sesh env                   print the settings of a cloud environment
 //	sesh status                show the vault, storage and last hook run
 //	sesh version               print this binary's version
 //	sesh save                  save this session; print its share token
@@ -22,8 +23,13 @@ import (
 const usageText = `sesh keeps your agent sessions in storage you own.
 
 Set up:
-  sesh init [-store URL]        create a vault key and choose storage
-  sesh key                      print your vault key (for other devices)
+  sesh init [VAULT]             create a vault key, with storage on this device
+  sesh init -aws BUCKET[/PREFIX] [VAULT]
+                                ... with storage in S3: makes the bucket if
+                                needed, and an IAM user for the vault alone
+  sesh init -store URL [VAULT]  ... with storage you already have
+  sesh env                      print the variables for a cloud environment
+  sesh key                      print your vault key
   sesh status                   show the vault, storage and last hook run
   sesh version                  print this binary's version
 
@@ -49,12 +55,15 @@ In Claude Code, the plugin saves each session after every turn, and
 /sesh <command> runs these commands from any session.
 
 Storage is a URL: file:///path, s3://bucket/prefix, or https://your-sesh-server.
-Settings come from ~/.sesh/config, overridden by SESH_STORE and SESH_KEY.`
+Each vault's settings are in ~/.sesh/VAULT; the vault is SESH_VAULT, else
+"default". SESH_KEY, SESH_STORE and the other variables sesh env prints
+override them.`
 
 // subcommands maps each subcommand to its function.
 var subcommands = map[string]func([]string) error{
 	"init":    cmdInit,
 	"key":     cmdKey,
+	"env":     cmdEnv,
 	"status":  cmdStatus,
 	"save":    cmdSave,
 	"restore": cmdRestore,
@@ -92,6 +101,10 @@ func main() {
 	run, ok := subcommands[os.Args[1]]
 	if !ok {
 		usage()
+	}
+	if err := checkVaultName(vaultName()); err != nil {
+		fmt.Fprintln(os.Stderr, "sesh: SESH_VAULT:", err)
+		os.Exit(1)
 	}
 	if err := run(os.Args[2:]); err != nil {
 		fmt.Fprintln(os.Stderr, "sesh:", err)

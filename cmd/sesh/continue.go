@@ -23,14 +23,39 @@ import (
 func cmdInit(args []string) error {
 	fs := flag.NewFlagSet("init", flag.ExitOnError)
 	storeFlag := fs.String("store", "", "storage URL: file:///path, s3://bucket/prefix or https://sesh-server")
+	awsFlag := fs.String("aws", "", "set up S3 storage in BUCKET[/PREFIX], with your AWS credentials")
+	regionFlag := fs.String("region", "", "with -aws, the region of a new bucket")
 	keyFlag := fs.String("key", "", "use this existing vault key (from another device)")
+	fs.Usage = func() {
+		fmt.Fprintln(fs.Output(), "usage: sesh init [-store URL | -aws BUCKET[/PREFIX] [-region REGION]] [-key KEY] [VAULT]")
+		fs.PrintDefaults()
+	}
 	fs.Parse(args)
+	// The vault name may come before the flags or after them.
+	if fs.NArg() > 0 {
+		name := fs.Arg(0)
+		fs.Parse(fs.Args()[1:])
+		if fs.NArg() > 0 {
+			return fmt.Errorf("init takes one vault name, not %q too", fs.Arg(0))
+		}
+		if err := checkVaultName(name); err != nil {
+			return err
+		}
+		vaultOverride = name
+		defer func() { vaultOverride = "" }()
+	}
+	if *storeFlag != "" && *awsFlag != "" {
+		return errors.New("use -store or -aws, not both")
+	}
+	if *regionFlag != "" && *awsFlag == "" {
+		return errors.New("-region goes with -aws")
+	}
 	if inCloud() {
 		return errors.New("a cloud session's files don't outlast it, so a vault set up here would be lost. " +
-			"Run sesh init on your own device, then set SESH_KEY and SESH_STORE in the cloud environment's settings")
+			"Run sesh init on your own device, then run sesh env there and set its variables in the cloud environment's settings")
 	}
 
-	keyPath := filepath.Join(seshHome(), "key")
+	keyPath := filepath.Join(vaultDir(), "key")
 	v, err := loadVault()
 	if err != nil {
 		return err
@@ -52,7 +77,7 @@ func cmdInit(args []string) error {
 		}
 		v = &vault.Vault{Key: k}
 	}
-	if err := os.MkdirAll(seshHome(), 0o700); err != nil {
+	if err := os.MkdirAll(vaultDir(), 0o700); err != nil {
 		return err
 	}
 	if os.Getenv("SESH_KEY") == "" {
@@ -61,38 +86,82 @@ func cmdInit(args []string) error {
 		}
 	}
 	cfg := readConfig()
-	if *storeFlag != "" {
-		if _, err := store.Open(*storeFlag); err != nil {
+	switch {
+	case *awsFlag != "":
+		t, err := parseAWSTarget(*awsFlag, vaultName())
+		if err != nil {
+			return err
+		}
+		if err := setupAWS(context.Background(), cfg, t, *regionFlag); err != nil {
+			return err
+		}
+	case *storeFlag != "":
+		if _, err := store.Open(*storeFlag, s3Config()); err != nil {
 			return err
 		}
 		cfg["store"] = *storeFlag
+	case cfg["store"] == "":
+		cfg["store"] = "file://" + filepath.Join(vaultDir(), "store")
 	}
-	if cfg["store"] == "" {
-		cfg["store"] = "file://" + filepath.Join(seshHome(), "store")
-	}
+	// Saved before checking, so that new credentials aren't lost if the
+	// check fails.
 	if err := writeConfig(cfg); err != nil {
 		return err
+	}
+	if *awsFlag != "" {
+		if err := checkS3(context.Background(), cfg); err != nil {
+			return err
+		}
+	}
+	for _, k := range configKeys {
+		if os.Getenv(k.env) != "" && cfg[k.key] != "" {
+			fmt.Printf("Note: %s is set, and overrides the vault's %s.\n", k.env, k.key)
+		}
 	}
 	if inClaude() {
 		where := keyPath
 		if os.Getenv("SESH_KEY") != "" {
 			where = "SESH_KEY"
 		}
-		fmt.Printf(`Vault set up. Storage: %s
+		fmt.Printf(`Vault %q set up. Storage: %s
 The vault key is in %s. It isn't printed here: this session's transcript
-would keep it. To set up another device, run sesh key in your own terminal.
-`, redactURL(cfg["store"]), where)
+would keep it. For the settings of a cloud environment, run sesh env in your
+own terminal.
+`, vaultName(), redactURL(cfg["store"]), where)
 		return nil
 	}
-	fmt.Printf(`Vault key:
+	fmt.Printf(`Vault %q set up.
+Vault key:
 %s
 
 Keep it safe: it is the only way to read your sessions. Anyone with it can.
 Storage: %s
 
-On another device:      sesh init -key <vault key> -store <storage URL>
-In Claude Code cloud:   set SESH_KEY and SESH_STORE in your environment's variables
-`, v.Key, cfg["store"])
+On another device:      copy the folder %s to the same place
+In Claude Code cloud:   run sesh env, and set its variables in your environment's settings
+`, vaultName(), v.Key, cfg["store"], vaultDir())
+	return nil
+}
+
+// cmdEnv prints the variables that set up a cloud environment with this
+// device's vault.
+func cmdEnv([]string) error {
+	if inClaude() {
+		return errors.New("not printing the vault key and credentials inside a Claude Code session: its transcript would keep them. Run sesh env in your own terminal")
+	}
+	v, err := requireVault()
+	if err != nil {
+		return err
+	}
+	if strings.HasPrefix(storeURL(), "file:") {
+		return fmt.Errorf("the store %s is on this device, out of a cloud session's reach: run sesh init -aws, or -store with an s3:// or https:// URL", storeURL())
+	}
+	fmt.Printf("SESH_KEY=%s\n", v.Key)
+	for _, k := range configKeys {
+		if val := setting(k.key); val != "" {
+			fmt.Printf("%s=%s\n", k.env, val)
+		}
+	}
 	return nil
 }
 
@@ -280,7 +349,7 @@ func remember(tok token.Token, res *sesh.RestoreResult) bool {
 	if err != nil || v == nil {
 		return false
 	}
-	return library.Remember(filepath.Join(seshHome(), "cache"), v, tok, res.Archive) == nil
+	return library.Remember(cacheDir(), v, tok, res.Archive) == nil
 }
 
 func saveSummary(r *sesh.SaveResult) string {

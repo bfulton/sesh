@@ -23,7 +23,7 @@ type fileStamp struct {
 	ModTime int64 `json:"mtime_ns"`
 }
 
-func statePath() string { return filepath.Join(seshHome(), "state.json") }
+func statePath() string { return filepath.Join(vaultDir(), "state.json") }
 
 func loadState() syncState {
 	st := syncState{}
@@ -38,7 +38,7 @@ func (s syncState) save() error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(seshHome(), 0o700); err != nil {
+	if err := os.MkdirAll(vaultDir(), 0o700); err != nil {
 		return err
 	}
 	tmp := statePath() + ".tmp"

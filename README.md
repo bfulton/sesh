@@ -26,21 +26,21 @@ That puts `sesh` in `~/go/bin`. Add that folder to your `PATH`, or use the full 
 
 ## Set up
 
-1. Choose storage and create your vault key:
+1. Create your vault and its storage in S3, with the AWS credentials you already use, such as an `AWS_PROFILE`:
 
    ```
-   sesh init -store s3://my-bucket/sesh
+   sesh init -aws my-bucket
    ```
 
-   For a folder or a sesh server instead of a bucket, see [the storage reference](docs/reference.md#storage). The command prints your **vault key**, a 26-character string that is the only way to read your sessions. Keep it like a password.
+   This makes the bucket if there is none, and an IAM user that can read and write the vault's prefix, `s3://my-bucket/default`, and nothing else. Its access key goes in `~/.sesh/default/config`. For a folder, a sesh server or another S3-compatible store instead, see [the storage reference](docs/reference.md#storage).
 
-2. On each other computer, use the same key and storage:
+   The command prints your **vault key**, a 26-character string that is the only way to read your sessions. Keep it like a password.
 
-   ```
-   sesh init -key VAULT_KEY -store STORAGE_URL
-   ```
+2. On each other computer, copy the folder `~/.sesh/default` to the same place.
 
-3. For Claude Code on the web, set `SESH_KEY` and `SESH_STORE` in your cloud environment's variables. For an S3-compatible bucket, also set `SESH_AWS_ACCESS_KEY_ID` and `SESH_AWS_SECRET_ACCESS_KEY`; see [the configuration reference](docs/reference.md#configuration).
+3. For Claude Code on the web, run `sesh env` in your terminal, and set the variables it prints in your cloud environment's settings.
+
+To keep separate vaults, such as one for work, name them: `sesh init -aws my-bucket work` sets up `~/.sesh/work` and `s3://my-bucket/work`, and `SESH_VAULT=work` selects it.
 
 4. Optional: let any Claude Code session search your sessions without the plugin:
 

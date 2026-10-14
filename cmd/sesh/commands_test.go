@@ -57,10 +57,10 @@ func TestKeyStaysOutOfSessions(t *testing.T) {
 	t.Setenv("SESH_STORE", "")
 
 	claudeEnv(t, true, true)
-	if _, _, err := runCmd(t, "init"); err == nil || !strings.Contains(err.Error(), "SESH_KEY and SESH_STORE") {
+	if _, _, err := runCmd(t, "init"); err == nil || !strings.Contains(err.Error(), "run sesh env there") {
 		t.Errorf("init in a cloud session: %v; want a refusal", err)
 	}
-	if _, err := os.Stat(filepath.Join(home, "key")); err == nil {
+	if _, err := os.Stat(filepath.Join(home, "default", "key")); err == nil {
 		t.Error("init in a cloud session wrote a key")
 	}
 
@@ -76,12 +76,12 @@ func TestKeyStaysOutOfSessions(t *testing.T) {
 	if strings.Contains(out, "secret") || !strings.Contains(out, "https://…@sesh.example") {
 		t.Errorf("init inside Claude Code printed the storage credentials:\n%s", out)
 	}
-	data, err := os.ReadFile(filepath.Join(home, "key"))
+	data, err := os.ReadFile(filepath.Join(home, "default", "key"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	key := strings.TrimSpace(string(data))
-	if strings.Contains(out, key) || !strings.Contains(out, "sesh key in your own terminal") {
+	if strings.Contains(out, key) || !strings.Contains(out, "sesh env in your") {
 		t.Errorf("init inside Claude Code printed the key or no pointer:\n%s", out)
 	}
 	if out, _, err := runCmd(t, "key"); err == nil || strings.Contains(out, key) {
@@ -98,7 +98,7 @@ func TestKeyStaysOutOfSessions(t *testing.T) {
 	t.Setenv("SESH_HOME", other)
 	t.Setenv("SESH_KEY", key)
 	claudeEnv(t, true, false)
-	if out, _, err := runCmd(t, "init"); err != nil || !strings.Contains(out, "SESH_KEY") || strings.Contains(out, filepath.Join(other, "key")) {
+	if out, _, err := runCmd(t, "init"); err != nil || !strings.Contains(out, "SESH_KEY") || strings.Contains(out, filepath.Join(other, "default", "key")) {
 		t.Errorf("init with SESH_KEY inside Claude Code: %v\n%s", err, out)
 	}
 }
@@ -158,7 +158,7 @@ func TestStatus(t *testing.T) {
 	t.Setenv("SESH_KEY", "")
 	t.Setenv("SESH_STORE", "https://user:secret@sesh.example")
 	out, _, err := runCmd(t, "status")
-	if err != nil || !strings.Contains(out, "vault: none") || !strings.Contains(out, "store: https://…@sesh.example") || strings.Contains(out, "secret") {
+	if err != nil || !strings.Contains(out, "vault: default, no key") || !strings.Contains(out, "store: https://…@sesh.example") || strings.Contains(out, "secret") {
 		t.Errorf("status: %v\n%s", err, out)
 	}
 	if !strings.Contains(out, "redaction: on\n") {

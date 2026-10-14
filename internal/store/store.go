@@ -46,8 +46,9 @@ func checkPrefix(prefix string) error {
 }
 
 // Open returns the store named by a URL: file:///path, s3://bucket/prefix,
-// or http(s)://host/ for a sesh server (see Remote).
-func Open(raw string) (Store, error) {
+// or http(s)://host/ for a sesh server (see Remote). An s3 store takes its
+// credentials and endpoint from s3c.
+func Open(raw string, s3c S3Config) (Store, error) {
 	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("store URL: %w", err)
@@ -62,7 +63,7 @@ func Open(raw string) (Store, error) {
 		if u.Host == "" {
 			return nil, errors.New("s3 store URL needs a bucket, like s3://my-bucket/prefix")
 		}
-		return NewS3(u.Host, strings.Trim(u.Path, "/"))
+		return NewS3(u.Host, strings.Trim(u.Path, "/"), s3c)
 	case "http", "https":
 		return NewRemote(raw)
 	default:

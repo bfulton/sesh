@@ -258,9 +258,9 @@ func statusText() string {
 	case err != nil:
 		fmt.Fprintf(&b, "vault: error: %v\n", err)
 	case v == nil:
-		b.WriteString("vault: none (run sesh init, or set SESH_KEY)\n")
+		fmt.Fprintf(&b, "vault: %s, no key (run sesh init, or set SESH_KEY)\n", vaultName())
 	default:
-		fmt.Fprintf(&b, "vault: %s…\n", v.ID()[:8])
+		fmt.Fprintf(&b, "vault: %s, %s…\n", vaultName(), v.ID()[:8])
 	}
 	if u := storeURL(); u != "" {
 		fmt.Fprintf(&b, "store: %s\n", redactURL(u))

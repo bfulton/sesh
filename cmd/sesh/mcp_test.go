@@ -135,7 +135,7 @@ func TestMCPSeesRestoredSession(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := library.Remember(filepath.Join(home, "cache"), &vault.Vault{Key: key}, saved.Token, a); err != nil {
+	if err := library.Remember(cacheDir(), &vault.Vault{Key: key}, saved.Token, a); err != nil {
 		t.Fatal(err)
 	}
 	if lib, err := srv.library(ctx); err != nil || len(lib.Find("theirs")) != 1 {
@@ -169,7 +169,7 @@ func TestMCPSeesEveryRestore(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := library.Remember(filepath.Join(home, "cache"), &vault.Vault{Key: key}, saved.Token, a); err != nil {
+		if err := library.Remember(cacheDir(), &vault.Vault{Key: key}, saved.Token, a); err != nil {
 			t.Fatal(err)
 		}
 		if lib, err := srv.library(ctx); err != nil || len(lib.Find(id)) != 1 {
